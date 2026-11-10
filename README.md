@@ -1,21 +1,31 @@
 # Whatsgramy
 
-A personal, read-only WhatsApp linked-device attachment archive with Telegram-backed recovery. Native Android APK + a private Node.js service. It is independent of WhatsApp and Telegram.
+A personal, read-only WhatsApp attachment archive with Telegram recovery. The Android APK runs the linked-device engine, database and Telegram client **on the phone**, without a hosted backend.
 
-**Phone-only migration:** requested and planned. The current preview still uses the private service; direct WhatsApp linking and Telegram login inside the APK are not implemented yet. The portable recovery manifest is being prepared for that engine.
+## Phone setup (0.3.0)
 
-**Current status:** initial implementation. Automated lifecycle tests use an isolated fake Telegram store; the Android build pipeline also installs and launches the APK on an emulator. Live WhatsApp pairing, Telegram authorization and real attachment capture require your accounts and a deployed backend. No account is pre-connected; no public backend is provided.
+1. Install the APK and open Settings. The foreground archive notification indicates that the phone engine is running.
+2. Enter your own Telegram API ID and hash from https://my.telegram.org and your phone number. Complete the Telegram code and optional two-step password prompts. Passwords and codes are not saved.
+3. Connect WhatsApp, then request a pairing code. In official WhatsApp, use **Linked devices → Link a device → Link with phone number** and enter the code. Refresh Settings to check connection status.
+4. Enable the file types and archive controls you want. Receive a normal attachment, then check its upload and verification status in Files or Upload history.
+5. Open files from Whatsgramy. Long-press an attachment to keep a local copy or delete verified local copies. Default retention is 15 days. Telegram Saved Messages stores files and the recovery index.
 
-## What it does
+The engine uses a loopback-only authenticated interface inside the APK; you do not configure a URL, API token or deployed service. Account sessions, credentials, SQLite and captured files are kept in Android app-private storage. Uninstalling removes phone data; reconnecting the same Telegram account restores backed-up metadata and file references.
 
-1. Link the private backend from WhatsApp **Linked devices**, using QR or pairing code.
+Android limits data-sync foreground services (including a six-hour daily budget on Android 15+). The engine stops when its budget expires; use Start / resume from Settings when allowed. WorkManager handles periodic phone-cache work while the engine is available. This is not a guarantee of uninterrupted capture: files must still be available from WhatsApp when the linked device receives them. Historical media, disappearing messages and view-once content cannot be promised; view-once and disappearing messages are excluded.
+
+**Validation:** archive lifecycle tests use a fake Telegram store. CI builds the embedded runtime and checks Android installation, Node/SQLite startup and loopback health without any hosted service. Real WhatsApp linking and Telegram authorization require your accounts and have not been validated by CI. This is an unofficial personal-use preview.
+
+## Archive behavior (shared engine)
+
+1. Link Whatsgramy from WhatsApp **Linked devices**, using QR or pairing code.
 2. Capture available ordinary incoming image, video, audio, document and sticker attachments. Keep their chat/message mapping in SQLite.
-3. Download to the backend's own `data/media` folder, never the original WhatsApp download location.
+3. Download to the engine's private `files/engine/media` folder, never the original WhatsApp download location.
 4. Upload as Telegram documents, then download the Telegram copy and compare SHA-256 hashes.
 5. Automatically checkpoint the recovery index to **Telegram Saved Messages**, separately from the media destination. The default account-protected JSON mode supports recovery with the same Telegram login; optional encrypted mode requires the original INDEX_KEY.
 6. The APK periodically downloads verified attachments into **its own** `Android/data/com.whatsgramy.app/files/Whatsgramy/Media` folder. Android may restrict file-manager access to this app-private folder; manage it inside Whatsgramy.
 7. After 15 days, remove eligible local copies only. Pin files to keep them. Manual phone-copy deletion leaves the chat and cloud mapping intact.
-8. Tap an archived attachment in Whatsgramy. If its local copy is missing, retrieve it through the private backend from Telegram, verify its hash and open it in the app. Redownloading restarts its local retention period.
+8. Tap an archived attachment in Whatsgramy. If its local copy is missing, retrieve it directly from Telegram, verify its hash and open it in the app. Redownloading restarts its local retention period.
 
 Official WhatsApp's missing-attachment behavior is unchanged. This app supplies the fallback in its own read-only conversation interface. Sending messages, calls, statuses and editing chats are not implemented.
 
@@ -25,7 +35,7 @@ The APK has switches for master archiving, WhatsApp capture, Telegram uploads, c
 
 The backend runs on a server, so the Wi-Fi switch concerns **phone auto-downloads**, not server traffic. Manual attachment opening uses the phone's active connection. Android WorkManager schedules at a minimum 15-minute interval; battery restrictions, Doze, free space and connection availability affect when downloads actually run. Manually deleted/expired files are not automatically redownloaded by periodic sync; tapping them retrieves them again.
 
-## Backend setup (Node 24)
+## Optional desktop service setup (development only) (Node 24)
 
 Use a private always-on VM. An Oracle VM can host it once provisioned. Do not expose port 8787 directly to the internet; the default listener is loopback and the Android app expects HTTPS.
 

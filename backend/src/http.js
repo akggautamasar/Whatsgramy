@@ -1,9 +1,14 @@
 import express from 'express';
 import { timingSafeEqual } from 'node:crypto';
-export function createApp({store,archive,wa,tg,token}){
+export function createApp({store,archive,wa,tg,token,login}){
  const app=express();app.disable('x-powered-by');app.use(express.json({limit:'16kb'}));app.get('/health',(_,res)=>res.json({ok:true}));
  app.use('/api',(req,res,next)=>{res.set('Cache-Control','no-store');const actual=Buffer.from(req.get('authorization')||''),expected=Buffer.from(`Bearer ${token}`);if(actual.length!==expected.length||!timingSafeEqual(actual,expected))return res.status(401).json({error:'Unauthorized'});next();});
  app.get('/api/status',(_,res)=>res.json({whatsapp:{connection:wa.connection,qr:wa.qr},telegram:{connected:tg.authorized},settings:store.settings(),stats:store.stats(),metadata:store.syncState()}));
+ if(login){
+ app.get('/api/telegram/login',(_,res)=>res.json(login.status()));
+ app.post('/api/telegram/login',async(req,res)=>{await login.start(req.body);res.json(login.status());});
+ app.post('/api/telegram/answer',(req,res)=>{login.answer(req.body.value);res.json(login.status());});
+ }
  app.get('/api/settings',(_,res)=>res.json(store.settings()));app.put('/api/settings',(req,res)=>{try{res.json(store.updateSettings(req.body));}catch(e){res.status(400).json({error:e.message});}});
  app.post('/api/whatsapp/start',async(_,res)=>{await wa.start();res.json({ok:true});});
  app.post('/api/whatsapp/pair',async(req,res)=>res.json({code:await wa.pair(String(req.body.phone||''))}));

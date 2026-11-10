@@ -7,3 +7,6 @@ local.properties
 node_modules/
 backend/data/
 .DS_Store
+android/app/src/main/assets/engine/
+android/app/src/main/jniLibs/
+android/app/src/main/cpp/node/

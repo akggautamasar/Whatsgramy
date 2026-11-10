@@ -33,6 +33,11 @@ jobs:
       - uses: android-actions/setup-android@v3
         with:
           packages: 'platform-tools'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Bundle phone engine and pinned native runtime
+        run: bash scripts/prepare-mobile.sh
       - uses: gradle/actions/setup-gradle@v4
       - name: Build APK
         working-directory: android
@@ -81,7 +86,11 @@ jobs:
           script: |
             adb install --no-streaming apk/app-debug.apk
             adb shell am start -W -n com.whatsgramy.app/.MainActivity
-            sleep 4
+            adb forward tcp:18787 tcp:8787
+            for attempt in $(seq 1 90); do curl -fsS http://127.0.0.1:18787/health && break || sleep 2; done
+            curl --fail http://127.0.0.1:18787/health
+            adb shell run-as com.whatsgramy.app cat files/engine/ready.json > runtime.json
+            python3 -c 'import json; x=json.load(open("runtime.json")); assert x["sqlite"] and x["phoneOnly"] and x["node"].startswith("v24.")' 
             adb shell pidof com.whatsgramy.app
             adb exec-out screencap -p > whatsgramy-start.png
             adb logcat -d -b crash > crash.log
@@ -93,6 +102,7 @@ jobs:
           path: |
             whatsgramy-start.png
             crash.log
+            runtime.json
   publish:
     needs: [backend, android, install]
     runs-on: ubuntu-latest
@@ -109,15 +119,16 @@ jobs:
       - name: Publish verified preview
         run: |
           set -euo pipefail
-          mv apk/app-debug.apk Whatsgramy-0.2.0-preview.apk
-          sha256sum Whatsgramy-0.2.0-preview.apk > SHA256SUMS.txt
+          mv apk/app-debug.apk Whatsgramy-0.3.0-preview.apk
+          sha256sum Whatsgramy-0.3.0-preview.apk > SHA256SUMS.txt
           cat > notes.md <<'NOTES'
-          Whatsgramy recovery metadata preview.
+          Whatsgramy phone-only engine preview.
 
-          Requires your private backend, Telegram login and WhatsApp linked-device pairing. See README for setup.
-          Adds automatic Saved Messages recovery indexes, upload/activity history, per-type counts and byte totals, original Telegram destination references, duplicate-upload avoidance, and metadata backup controls.
-          This preview still uses the private backend. The direct-on-phone WhatsApp/Telegram engine is not implemented yet.
-          Backend lifecycle tests and Android emulator installation/startup checks passed. Live account pairing and capture still require testing with your own accounts.
-          Debug-signed preview; signing keys can differ between builds. Stable production signing has not been configured.
+          Links WhatsApp and Telegram directly inside the APK. No hosted backend is required.
+          Open Settings, connect Telegram using your API ID/hash, then pair WhatsApp using Linked devices.
+          Includes verified Telegram archives, automatic recovery indexes, upload history, file type controls, retention, manual local deletion and retrieval.
+          Android background execution limits apply; use Start / resume when the engine is stopped.
+          CI checks engine startup, actual Android SQLite support, API health and installation on an Android emulator. Live account pairing still needs validation with your accounts.
+          Debug-signed preview; signing keys can differ between builds. Stable production signing is not configured.
           NOTES
-          gh release create "preview-$GITHUB_RUN_NUMBER" Whatsgramy-0.2.0-preview.apk SHA256SUMS.txt --target "$GITHUB_SHA" --title "Whatsgramy 0.2.0 preview (build $GITHUB_RUN_NUMBER)" --notes-file notes.md --prerelease
+          gh release create "preview-$GITHUB_RUN_NUMBER" Whatsgramy-0.3.0-preview.apk SHA256SUMS.txt --target "$GITHUB_SHA" --title "Whatsgramy 0.3.0 preview (build $GITHUB_RUN_NUMBER)" --notes-file notes.md --prerelease

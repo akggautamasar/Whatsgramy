@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.22.1)
+project(whatsgramy)
+add_library(node SHARED IMPORTED)
+set_target_properties(node PROPERTIES IMPORTED_LOCATION ${CMAKE_CURRENT_SOURCE_DIR}/../jniLibs/${ANDROID_ABI}/libnode.so)
+add_library(engine SHARED engine.cpp)
+target_include_directories(engine PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/node/include/node)
+target_link_libraries(engine node log android)
+target_link_options(engine PRIVATE "-Wl,-z,max-page-size=16384")
