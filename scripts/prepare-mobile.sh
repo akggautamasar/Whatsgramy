@@ -15,6 +15,7 @@ done
 rm -rf "$ROOT/assets/engine"
 mkdir -p "$ROOT/assets/engine"
 cp backend/package.json "$ROOT/assets/engine/"
+curl --fail -L --retry 3 https://raw.githubusercontent.com/fogtape/nodejs-mobile/v24.22.1-0/LICENSE -o "$ROOT/assets/engine/Node-LICENSE.txt"
 cp -R backend/src backend/node_modules "$ROOT/assets/engine/"
 # Desktop-only optional image codecs cannot load on Android. Baileys media
 # downloading does not need them; its optional thumbnail path handles absence.

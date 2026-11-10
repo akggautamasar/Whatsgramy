@@ -16,7 +16,7 @@ class EngineService:Service(){
         manager.createNotificationChannel(NotificationChannel("archive","Archive engine",NotificationManager.IMPORTANCE_LOW))
         val pending=PendingIntent.getActivity(this,0,Intent(this,MainActivity::class.java),PendingIntent.FLAG_IMMUTABLE)
         startForeground(1,Notification.Builder(this,"archive").setSmallIcon(android.R.drawable.stat_sys_upload).setContentTitle("Whatsgramy archive is running").setContentText("WhatsApp and Telegram connect on this phone").setContentIntent(pending).build())
-        if(!started){started=true;Thread {
+        if(!started){started=true;Thread(null, Runnable {
             try {
                 val bundle=File(filesDir,"engine-bundle");val revision=BuildConfig.VERSION_CODE.toString()
                 if(File(bundle,"revision").readTextOrNull()!=revision){bundle.deleteRecursively();copyAsset("engine",bundle);File(bundle,"revision").writeText(revision)}
@@ -25,7 +25,7 @@ class EngineService:Service(){
                 startNode(File(bundle,"src/mobile-entry.js").path,dir.path)
             }catch(e:Throwable){File(filesDir,"engine-error.txt").writeText(e.toString())}
             stopSelf();android.os.Process.killProcess(android.os.Process.myPid())
-        }.start()}
+        }, "WhatsgramyNode", 8L * 1024 * 1024).start()}
         return START_NOT_STICKY
     }
     private fun File.readTextOrNull()=if(exists())readText()else null

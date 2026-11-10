@@ -3,7 +3,7 @@ import { StringSession } from 'telegram/sessions/index.js';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 export class MobileLogin {
- constructor(tg,onAuthorized){this.tg=tg;this.onAuthorized=onAuthorized;this.state='idle';this.error=null;this.pending=null;this.busy=false;}
+ constructor(tg,onAuthorized,createClient=(...args)=>new TelegramClient(...args)){this.createClient=createClient;this.tg=tg;this.onAuthorized=onAuthorized;this.state='idle';this.error=null;this.pending=null;this.busy=false;}
  status(){return {state:this.state,error:this.error};}
  answer(value){if(!this.pending)throw Error('No login step is waiting');const p=this.pending;this.pending=null;p(String(value));}
  ask(state){this.state=state;return new Promise(resolve=>{this.pending=resolve;});}
@@ -14,7 +14,7 @@ export class MobileLogin {
   this.busy=true;this.state='connecting';this.error=null;
   const cfg=this.tg.cfg;cfg.apiId=Number(apiId);cfg.apiHash=apiHash;
   await this.tg.close();
-  const client=new TelegramClient(new StringSession(''),cfg.apiId,cfg.apiHash,{connectionRetries:3});client.setLogLevel('none');this.tg.client=client;
+  const client=this.createClient(new StringSession(''),cfg.apiId,cfg.apiHash,{connectionRetries:3});client.setLogLevel('none');this.tg.client=client;
   this.task=(async()=>{try{
    await client.start({phoneNumber:async()=>phone,phoneCode:()=>this.ask('code'),password:()=>this.ask('password'),onError:e=>{this.error=String(e.errorMessage||e.message).slice(0,120);}});
    this.tg.authorized=true;this.tg.accountId=String((await client.getMe()).id);

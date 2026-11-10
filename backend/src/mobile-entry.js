@@ -9,7 +9,7 @@ import { recoverArchive } from './metadata.js';
 import { createApp } from './http.js';
 import { MobileLogin } from './mobile-login.js';
 process.umask(0o077);
-const dir=process.argv[2];if(!dir)throw Error('Missing private engine directory');await mkdir(dir,{recursive:true});
+const dir=process.argv[2];if(!dir)throw Error('Missing private engine directory');await mkdir(dir,{recursive:true});process.env.TMPDIR=join(dir,'tmp');await mkdir(process.env.TMPDIR,{recursive:true});
 const privateConfig=JSON.parse(await readFile(join(dir,'engine.json'),'utf8'));
 const credentials=JSON.parse(await readFile(join(dir,'telegram-api.json'),'utf8').catch(()=>'{}'));
 const cfg={...credentials,dir,token:privateConfig.token,indexKey:Buffer.from(privateConfig.indexKey,'hex'),indexMode:'telegram',destination:'me'};
