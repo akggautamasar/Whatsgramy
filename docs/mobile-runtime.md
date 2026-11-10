@@ -1,0 +1,11 @@
+# Embedded phone engine
+
+The Android foreground service runs in a separate, non-exported `:engine` process. JNI starts Node once in that process. The existing archive modules run there with SQLite, Baileys and GramJS, serving only authenticated loopback requests on 127.0.0.1:8787. This local interface is not a hosted backend. Tokens and recovery keys are randomly generated in app-private storage; the Android client stores its token using Android Keystore encryption.
+
+The runtime is fogtape/nodejs-mobile v24.22.1-0 (Node 24 LTS), downloaded with a pinned SHA-256 in scripts/prepare-mobile.sh. Native arm64-v8a and x86_64 binaries support 16 KB pages; the JNI shim also requests 16 KB alignment. CMake uses NDK r27d and shared libc++. Runtime source and licenses: https://github.com/fogtape/nodejs-mobile/tree/v24.22.1-0 . Node.js license: https://github.com/nodejs/node/blob/v24.22.1/LICENSE . Dependencies retain their package license files in the bundled node_modules.
+
+Telegram sign-in uses the phone, code and optional password callbacks. Password/code remain transient; a StringSession and API credentials are saved under the application UID. Recovery finishes before archive transfers are permitted. Captured originals live under files/engine/media, separate from WhatsApp originals. Android preview copies use the existing external app-private cache. Manual removal and pin controls apply to both copies. Automated cleanup only removes verified, indexed engine copies and verified cache copies.
+
+The service has a visible dataSync notification and stops at Android's foreground-service timeout. It does not evade Android's daily service budget or restart itself indefinitely. Explicit Stop persists across app launches; Start resumes the engine. Opening the app starts the engine by default. Periodic WorkManager cache jobs do not relaunch the engine from a restricted background state. A phone that was offline or whose service was stopped can only archive media still available from WhatsApp after reconnecting.
+
+CI validates actual embedded Node and SQLite startup on Android, not just a desktop health endpoint. Real account pairing and Telegram API behavior must still be checked on a phone. No sending messages, bypassing view-once restrictions, or patching official WhatsApp is implemented.

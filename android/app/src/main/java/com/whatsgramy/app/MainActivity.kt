@@ -42,7 +42,8 @@ class MainActivity:ComponentActivity(){
         root.setOnApplyWindowInsetsListener { v,insets->v.setPadding(insets.systemWindowInsetLeft,insets.systemWindowInsetTop,insets.systemWindowInsetRight,insets.systemWindowInsetBottom);insets }
         setContentView(root)
         onBackPressedDispatcher.addCallback(this,object:OnBackPressedCallback(true){override fun handleOnBackPressed(){back?.invoke()?:finish()}})
-        EngineService.start(this)
+        EngineService.prepare(this)
+        if(getSharedPreferences("engine-controls",MODE_PRIVATE).getBoolean("enabled",true))EngineService.start(this)
         if(android.os.Build.VERSION.SDK_INT>=33)requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS),32)
         ArchiveSync.schedule(this)
         showSettings()
@@ -100,7 +101,7 @@ class MainActivity:ComponentActivity(){
     private fun showSettings(){page("Settings","Everything is under your control")
         val connect=card();connect.addView(text("On this phone",18f,true));connect.addView(text("WhatsApp, Telegram and your archive run inside this APK. No hosted server is needed.",14f))
         connect.addView(button("Start / resume archive engine"){EngineService.start(this);showSettings()})
-        connect.addView(button("Stop archive engine"){stopService(android.content.Intent(this,EngineService::class.java));Toast.makeText(this,"Engine stopped. Resume here when needed.",Toast.LENGTH_LONG).show()})
+        connect.addView(button("Stop archive engine"){getSharedPreferences("engine-controls",MODE_PRIVATE).edit().putBoolean("enabled",false).apply();stopService(android.content.Intent(this,EngineService::class.java));Toast.makeText(this,"Engine stopped. Resume here when needed.",Toast.LENGTH_LONG).show()})
         connect.addView(text("Android limits long-running background transfers. Keep the archive notification enabled and reopen Whatsgramy to resume if Android stops it. Never delete an original until its backup is verified.",12f))
         val phone=card();phone.addView(text("This phone",18f,true));switch(phone,"Download archived attachments automatically","Runs periodically while Android allows background work.",cfg.autoDownload){cfg.autoDownload=it;ArchiveSync.schedule(this)};switch(phone,"Wi-Fi only for automatic downloads","Manual opening can use your current connection.",cfg.wifiOnly){cfg.wifiOnly=it;ArchiveSync.schedule(this)};switch(phone,"Clean up this phone's local copies","Uses the archive retention period. Pinned copies are kept.",cfg.cleanup){cfg.cleanup=it}
         MediaCache(this).use{phone.addView(text("Local cache: ${it.fileCount()} files · ${formatSize(it.bytes())}\nFolder: ${it.folder()}",12f))}

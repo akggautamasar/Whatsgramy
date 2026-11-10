@@ -38,6 +38,6 @@ class EngineService:Service(){
             if(!file.exists()){fun random():String {val b=ByteArray(32);SecureRandom().nextBytes(b);return b.joinToString(""){"%02x".format(it)}};file.writeText(JSONObject().put("token",random()).put("indexKey",random()).toString())}
             val token=JSONObject(file.readText()).getString("token");Connection(context).save("http://127.0.0.1:8787",token)
         }
-        fun start(context:Context){prepare(context);context.startForegroundService(Intent(context,EngineService::class.java))}
+        fun start(context:Context){context.getSharedPreferences("engine-controls",Context.MODE_PRIVATE).edit().putBoolean("enabled",true).apply();prepare(context);context.startForegroundService(Intent(context,EngineService::class.java))}
     }
 }
