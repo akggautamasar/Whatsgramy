@@ -65,7 +65,7 @@ class MainActivity:ComponentActivity(){
     private fun runWork(action:suspend()->Unit){val g=generation;lifecycleScope.launch{try{action()}catch(e:Exception){if(g==generation)Toast.makeText(this@MainActivity,e.message?:"Connection failed",Toast.LENGTH_LONG).show()}}}
     private suspend fun request(path:String,method:String="GET",body:JSONObject?=null,query:Map<String,String> = emptyMap())=withContext(Dispatchers.IO){
         val api=Api(this@MainActivity)
-        for(attempt in 0 until 40){try{api.json("/api/status");break}catch(e:java.net.ConnectException){if(attempt==39)throw IllegalStateException("Engine is stopped or still starting. Tap Start / resume in Settings.");kotlinx.coroutines.delay(500)}}
+        for(attempt in 0 until 180){try{api.json("/api/status");break}catch(e:java.net.ConnectException){if(attempt==179)throw IllegalStateException("Engine is stopped or still starting. Tap Start / resume in Settings.");kotlinx.coroutines.delay(500)}}
         api.json(path,method,body,query)
     }
     private fun formatSize(n:Long)=when{n>=1_000_000_000->"%.1f GB".format(n/1e9);n>=1_000_000->"%.1f MB".format(n/1e6);n>=1000->"%.0f KB".format(n/1e3);else->"$n B"}
@@ -105,7 +105,8 @@ class MainActivity:ComponentActivity(){
         connect.addView(text("Android limits long-running background transfers. Keep the archive notification enabled and reopen Whatsgramy to resume if Android stops it. Never delete an original until its backup is verified.",12f))
         val phone=card();phone.addView(text("This phone",18f,true));switch(phone,"Download archived attachments automatically","Runs periodically while Android allows background work.",cfg.autoDownload){cfg.autoDownload=it;ArchiveSync.schedule(this)};switch(phone,"Wi-Fi only for automatic downloads","Manual opening can use your current connection.",cfg.wifiOnly){cfg.wifiOnly=it;ArchiveSync.schedule(this)};switch(phone,"Clean up this phone's local copies","Uses the archive retention period. Pinned copies are kept.",cfg.cleanup){cfg.cleanup=it}
         MediaCache(this).use{phone.addView(text("Local cache: ${it.fileCount()} files · ${formatSize(it.bytes())}\nFolder: ${it.folder()}",12f))}
-        val g=generation;runWork{val status=request("/api/status");if(g!=generation)return@runWork
+        val engineState=text("Starting the local engine… First launch can take about a minute.",13f);body.addView(engineState)
+        val g=generation;runWork{val status=request("/api/status");if(g!=generation)return@runWork;engineState.text="Local engine ready · no hosted service needed"
             val accounts=card();accounts.addView(text("Connections",18f,true));val wa=status.getJSONObject("whatsapp");accounts.addView(text("WhatsApp: ${wa.optString("connection")}\nTelegram: ${if(status.getJSONObject("telegram").optBoolean("connected"))"connected"else"not connected"}"));if(!status.getJSONObject("telegram").optBoolean("connected"))telegramLogin(accounts)
             accounts.addView(button("Connect / refresh WhatsApp"){runWork{request("/api/whatsapp/start","POST");showSettings()}})
             val number=EditText(this).apply{hint="WhatsApp number with country code, digits only";inputType=InputType.TYPE_CLASS_PHONE};accounts.addView(number);accounts.addView(button("Get pairing code"){runWork{val response=request("/api/whatsapp/pair","POST",JSONObject().put("phone",number.text.toString().filter{it.isDigit()}));AlertDialog.Builder(this@MainActivity).setTitle("Link Whatsgramy").setMessage("In WhatsApp → Linked devices → Link a device → Link with phone number, enter:\n\n${response.getString("code")}").setPositiveButton("OK",null).show()}})
