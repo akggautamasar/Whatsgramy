@@ -1,0 +1,30 @@
+import { createHash, randomBytes, createCipheriv, createDecipheriv } from 'node:crypto';
+import { createReadStream } from 'node:fs';
+import { mkdir, stat, unlink, rename, writeFile, readFile } from 'node:fs/promises';
+import { pipeline } from 'node:stream/promises';
+import { createWriteStream } from 'node:fs';
+import { join } from 'node:path';
+export async function hashFile(path){const h=createHash('sha256');for await(const chunk of createReadStream(path))h.update(chunk);return h.digest('hex');}
+export const mediaId=(account,chat,id)=>createHash('sha256').update(JSON.stringify([account,chat,id])).digest('hex');
+export function seal(value,key){const nonce=randomBytes(12),cipher=createCipheriv('aes-256-gcm',key,nonce);const body=Buffer.concat([cipher.update(Buffer.from(JSON.stringify(value))),cipher.final()]);return Buffer.concat([nonce,cipher.getAuthTag(),body]);}
+export function unseal(value,key){const d=createDecipheriv('aes-256-gcm',key,value.subarray(0,12));d.setAuthTag(value.subarray(12,28));return JSON.parse(Buffer.concat([d.update(value.subarray(28)),d.final()]).toString());}
+const exists=async p=>!!p&&await stat(p).then(s=>s.isFile()).catch(()=>false);
+export class Archive {
+ constructor({store,telegram,download,dir,indexKey,maxBytes=2_000_000_000}){Object.assign(this,{store,telegram,download,dir,indexKey,maxBytes});this.locks=new Map();this.running=false;this.manifestLock=null;}
+ async lock(id,fn){while(this.locks.has(id))await this.locks.get(id).catch(()=>{});const p=fn();this.locks.set(id,p);try{return await p;}finally{if(this.locks.get(id)===p)this.locks.delete(id);}}
+ async tick(){if(this.running)return;this.running=true;try{await mkdir(this.dir,{recursive:true,mode:0o700});const cfg=this.store.settings();if(!cfg.enabled)return;for(const m of this.store.queue()){const current=this.store.settings();if(!current.enabled)break;if(!current[m.kind])continue;try{await this.lock(m.id,()=>this.process(m.id));}catch(e){const latest=this.store.get(m.id);this.store.patch(m.id,{status:'failed',attempts:latest.attempts+1,retry_at:Date.now()+Math.min(3600000,15000*2**Math.min(latest.attempts,8)),error:String(e.message).slice(0,180)});}}if(this.store.snapshot().media.some(m=>!this.store.get(m.id).manifest_at))await this.backupIndex();await this.cleanup();}finally{this.running=false;}}
+ async process(id){let m=this.store.get(id),cfg=this.store.settings();if(!cfg.enabled||!cfg[m.kind])return;
+  if(!await exists(m.path)){
+   if(m.telegram_id){await this.retrieve(m);m=this.store.get(id);}
+   else {if(!cfg.autoDownload)return;if(!m.raw)throw Error('Original media is unavailable; no backup exists');if(m.size>this.maxBytes)throw Error('Attachment exceeds configured Telegram upload limit');const target=join(this.dir,id),part=target+'.part';this.store.patch(id,{status:'downloading'});try{await this.download(m,part,this.maxBytes);const s=await stat(part);if(!s.size||s.size>this.maxBytes||(m.size>0&&s.size!==m.size))throw Error('Incomplete or oversized WhatsApp download');const hash=await hashFile(part);await rename(part,target);this.store.patch(id,{path:target,size:s.size,sha256:hash,downloaded_at:Date.now(),status:'downloaded'});}finally{await unlink(part).catch(()=>{});}m=this.store.get(id);}
+  }
+  cfg=this.store.settings();if(!cfg.enabled||!cfg.autoUpload||!cfg[m.kind])return;
+  if(!m.telegram_id){this.store.patch(id,{status:'uploading'});const remote=await this.telegram.upload(m.path,m);this.store.patch(id,{telegram_id:remote,status:'uploaded'});m=this.store.get(id);}
+  this.store.patch(id,{status:'verifying'});const verify=join(this.dir,id+'.verify');try{await this.telegram.download(m.telegram_id,verify);if(await hashFile(verify)!==m.sha256)throw Error('Telegram verification failed; local copy retained');this.store.patch(id,{status:'verified',verified_at:Date.now(),manifest_at:null,error:null,raw:null,attempts:0,retry_at:0});}finally{await unlink(verify).catch(()=>{});}
+ }
+ async retrieve(m){if(!m.telegram_id||!m.sha256)throw Error('No usable Telegram backup');const target=join(this.dir,m.id),part=target+'.restore';await mkdir(this.dir,{recursive:true,mode:0o700});try{await this.telegram.download(m.telegram_id,part);if(await hashFile(part)!==m.sha256)throw Error('Telegram copy differs from the archived file');await rename(part,target);this.store.patch(m.id,{path:target,downloaded_at:Date.now(),status:'verified',verified_at:Date.now(),error:null});return target;}finally{await unlink(part).catch(()=>{});}}
+ async open(id){return this.lock(id,async()=>{const m=this.store.get(id);if(!m)throw Error('Attachment not found');if(await exists(m.path)&&await hashFile(m.path)===m.sha256)return m.path;if(!this.store.settings().cloudOpen)throw Error('Cloud retrieval is turned off in Settings');return this.retrieve(m);});}
+ async backupIndex(){if(this.manifestLock)return this.manifestLock;this.manifestLock=(async()=>{const snapshot=this.store.snapshot();if(!snapshot.media.length)return;await this.telegram.backupIndex(seal(snapshot,this.indexKey));for(const m of snapshot.media)this.store.patch(m.id,{manifest_at:snapshot.createdAt});})();try{await this.manifestLock;}finally{this.manifestLock=null;}}
+ async deleteLocal(id){return this.lock(id,async()=>{let m=this.store.get(id);if(!m||m.status!=='verified'||!m.telegram_id)throw Error('A verified Telegram backup is required before local deletion');if(!m.manifest_at){await this.backupIndex();m=this.store.get(id);}if(await exists(m.path)){if(await hashFile(m.path)!==m.sha256)throw Error('Local file changed; it was not deleted');await unlink(m.path);}this.store.patch(id,{path:null});});}
+ async cleanup(now=Date.now()){const c=this.store.settings();if(!c.enabled||!c.autoCleanup)return;const cutoff=now-c.retentionDays*86400000;const rows=this.store.db.prepare("SELECT id FROM media WHERE status='verified' AND path IS NOT NULL AND manifest_at IS NOT NULL AND pinned=0 AND downloaded_at<=?").all(cutoff);for(const m of rows){if(!this.store.settings().enabled||!this.store.settings().autoCleanup)break;await this.deleteLocal(m.id);}}
+}
