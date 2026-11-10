@@ -1,0 +1,9 @@
+.env
+*.keystore
+*.jks
+local.properties
+.gradle/
+**/build/
+node_modules/
+backend/data/
+.DS_Store
