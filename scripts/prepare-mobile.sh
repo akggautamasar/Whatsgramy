@@ -14,6 +14,7 @@ done
 (cd backend && npm ci --omit=dev --ignore-scripts)
 rm -rf "$ROOT/assets/engine"
 mkdir -p "$ROOT/assets/engine"
+git rev-parse HEAD > "$ROOT/assets/engine/source-revision"
 cp backend/package.json "$ROOT/assets/engine/"
 curl --fail -L --retry 3 https://raw.githubusercontent.com/fogtape/nodejs-mobile/v24.22.1-0/LICENSE -o "$ROOT/assets/engine/Node-LICENSE.txt"
 cp -R backend/src backend/node_modules "$ROOT/assets/engine/"

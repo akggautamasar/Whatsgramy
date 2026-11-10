@@ -18,7 +18,7 @@ class EngineService:Service(){
         startForeground(1,Notification.Builder(this,"archive").setSmallIcon(android.R.drawable.stat_sys_upload).setContentTitle("Whatsgramy archive is running").setContentText("WhatsApp and Telegram connect on this phone").setContentIntent(pending).build())
         if(!started){started=true;Thread(null, Runnable {
             try {
-                val bundle=File(filesDir,"engine-bundle");val revision=BuildConfig.VERSION_CODE.toString()
+                val bundle=File(filesDir,"engine-bundle");val revision=assets.open("engine/source-revision").bufferedReader().use{it.readText()}
                 if(File(bundle,"revision").readTextOrNull()!=revision){bundle.deleteRecursively();copyAsset("engine",bundle);File(bundle,"revision").writeText(revision)}
                 val dir=File(filesDir,"engine").apply{mkdirs()};File(dir,"ready.json").delete()
                 System.loadLibrary("node");System.loadLibrary("engine")
