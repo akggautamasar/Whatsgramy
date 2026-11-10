@@ -2,6 +2,7 @@
 set -euo pipefail
 trap 'adb logcat -d > engine-logcat.txt; adb shell run-as com.whatsgramy.app cat files/engine-error.txt > engine-error.txt 2>/dev/null || true' EXIT
 adb install --no-streaming apk/app-debug.apk
+adb shell pm grant com.whatsgramy.app android.permission.POST_NOTIFICATIONS
 adb shell am start -W -n com.whatsgramy.app/.MainActivity
 adb forward tcp:18787 tcp:8787
 for attempt in $(seq 1 90); do curl -fsS http://127.0.0.1:18787/health && break || sleep 2; done
