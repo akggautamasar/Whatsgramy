@@ -2,6 +2,8 @@
 
 A personal, read-only WhatsApp linked-device attachment archive with Telegram-backed recovery. Native Android APK + a private Node.js service. It is independent of WhatsApp and Telegram.
 
+**Phone-only migration:** requested and planned. The current preview still uses the private service; direct WhatsApp linking and Telegram login inside the APK are not implemented yet. The portable recovery manifest is being prepared for that engine.
+
 **Current status:** initial implementation. Automated lifecycle tests use an isolated fake Telegram store; the Android build pipeline also installs and launches the APK on an emulator. Live WhatsApp pairing, Telegram authorization and real attachment capture require your accounts and a deployed backend. No account is pre-connected; no public backend is provided.
 
 ## What it does
@@ -10,7 +12,7 @@ A personal, read-only WhatsApp linked-device attachment archive with Telegram-ba
 2. Capture available ordinary incoming image, video, audio, document and sticker attachments. Keep their chat/message mapping in SQLite.
 3. Download to the backend's own `data/media` folder, never the original WhatsApp download location.
 4. Upload as Telegram documents, then download the Telegram copy and compare SHA-256 hashes.
-5. Back up the recovery index to Telegram, encrypted with your `INDEX_KEY`.
+5. Automatically checkpoint the recovery index to **Telegram Saved Messages**, separately from the media destination. The default account-protected JSON mode supports recovery with the same Telegram login; optional encrypted mode requires the original INDEX_KEY.
 6. The APK periodically downloads verified attachments into **its own** `Android/data/com.whatsgramy.app/files/Whatsgramy/Media` folder. Android may restrict file-manager access to this app-private folder; manage it inside Whatsgramy.
 7. After 15 days, remove eligible local copies only. Pin files to keep them. Manual phone-copy deletion leaves the chat and cloud mapping intact.
 8. Tap an archived attachment in Whatsgramy. If its local copy is missing, retrieve it through the private backend from Telegram, verify its hash and open it in the app. Redownloading restarts its local retention period.
@@ -19,7 +21,7 @@ Official WhatsApp's missing-attachment behavior is unchanged. This app supplies 
 
 ## Settings
 
-The APK has switches for master archiving, WhatsApp capture, Telegram uploads, cloud retrieval, automatic cleanup, individual media types, phone auto-downloads, Wi-Fi-only automatic phone downloads and phone cleanup. Retention is editable from 1–365 days, default 15. Master off pauses new backend transfers and automatic cleanup; existing cloud files remain available for manual opening if cloud retrieval is enabled. An already-running transfer may finish before pause takes effect.
+The APK has switches for master archiving, WhatsApp capture, Telegram uploads, cloud retrieval, automatic cleanup, individual media types, phone auto-downloads, Wi-Fi-only automatic phone downloads and phone cleanup, and automatic recovery-metadata checkpoints. Retention is editable from 1–365 days, default 15. Master off pauses new backend transfers and automatic cleanup; existing cloud files remain available for manual opening if cloud retrieval is enabled. An already-running transfer may finish before pause takes effect.
 
 The backend runs on a server, so the Wi-Fi switch concerns **phone auto-downloads**, not server traffic. Manual attachment opening uses the phone's active connection. Android WorkManager schedules at a minimum 15-minute interval; battery restrictions, Doze, free space and connection availability affect when downloads actually run. Manually deleted/expired files are not automatically redownloaded by periodic sync; tapping them retrieves them again.
 
@@ -69,7 +71,7 @@ docker compose run --rm whatsgramy node src/telegram-login.js
 docker compose up -d
 ```
 
-`compose.yml` binds only 127.0.0.1. Use the HTTPS proxy above. Back up the complete `data` folder and `.env` securely, especially INDEX_KEY. Do not run two backend instances against the same WhatsApp session or SQLite directory.
+`compose.yml` binds only 127.0.0.1. Use the HTTPS proxy above. Back up the complete `data` folder and `.env` securely, especially INDEX_KEY if encrypted metadata is enabled. Do not run two backend instances against the same WhatsApp session or SQLite directory.
 
 ## Recovery and deletion rules
 
@@ -78,8 +80,10 @@ docker compose up -d
 - Cleanup never deletes Telegram messages. There is no remote-delete API in this version.
 - The encrypted recovery index must be backed up before a backend local copy can be deleted.
 - Manual **Delete this phone's copy** affects only the APK's cache. The backend uses its own retention timer. **Keep local copy** in the APK pins that phone copy only.
-- To recover a lost backend index: restore `.env`/INDEX_KEY and authorize the same Telegram account/destination, stop the service, run `npm run index:restore`, then restart. This recovers verified attachment references and conversation metadata; pending uncaptured media cannot be reconstructed from that index.
-- Telegram archive documents contain the attachment bytes without application-layer encryption. The recovery index is AES-256-GCM encrypted; the attachments themselves are ordinary Telegram cloud-chat files. The private backend can read them. Do not describe this as end-to-end encryption of the archive.
+- A fresh empty archive automatically searches Saved Messages after Telegram authorization on backend startup, validates the newest readable index and restores it. Original Telegram destinations are recorded per file, so the index is discoverable even when media is in another private chat/channel. A corrupted checkpoint falls back to an earlier readable one. Existing local archives are not replaced. Errors block new archive transfers rather than silently publishing an empty replacement. The same account must retain access to its media destinations.
+- For an explicit recovery/merge, stop the service and run `npm run index:restore`. Encrypted v1 backups are still readable with the original INDEX_KEY. Pending files without a Telegram copy restore as **needs source**, not as backed up. Re-delivery of an available matching WhatsApp message can requeue them. Local paths, phone credentials, WhatsApp media decryption keys and login sessions are never reconstructed from the manifest.
+- Default metadata mode (`INDEX_MODE=telegram`) stores filenames, chat labels/text, file hashes, upload dates, statuses, Telegram references, activity history and archive preferences in a JSON document in your Saved Messages. It is protected by your Telegram account, not application-layer end-to-end encryption. This enables same-login recovery without the old local recovery key. Set `INDEX_MODE=encrypted` for AES-256-GCM metadata encryption; that mode requires keeping the original INDEX_KEY. Attachments themselves remain ordinary Telegram cloud-chat documents in both modes. Login/session credentials are excluded.
+- Automatic metadata backup has its own Settings switch. If disabled, uncheckpointed local files cannot be deleted until you manually back up the recovery index. Counts are rebuilt from records rather than trusting cached totals. Duplicate content can reuse a verified Telegram upload while retaining separate chat/message mappings. This only protects records in completed checkpoints; unsuccessful metadata uploads are reported and retried.
 
 ## Limits
 
@@ -104,3 +108,5 @@ npm test
 Tests cover verified upload → recovery index → local deletion → remote fallback, corrupt remote retention, 15-day retention and pinning, Settings gates, index restoration, API authentication/validation, excluded ephemeral media, and encrypted-index tampering. They do not substitute for live account testing.
 
 GitHub Actions builds the APK, verifies signing/alignment, installs/starts it on Android 15, runs the backend tests and then publishes a preview release with SHA-256 checksum. No native TDLib compilation is required; the backend uses GramJS with a Telegram user session.
+
+See [recovery manifest contract](docs/recovery-manifest.md) for the phone-only data model and recovery guarantees.

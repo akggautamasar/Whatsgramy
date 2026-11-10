@@ -109,14 +109,15 @@ jobs:
       - name: Publish verified preview
         run: |
           set -euo pipefail
-          mv apk/app-debug.apk Whatsgramy-0.1.0-preview.apk
-          sha256sum Whatsgramy-0.1.0-preview.apk > SHA256SUMS.txt
+          mv apk/app-debug.apk Whatsgramy-0.2.0-preview.apk
+          sha256sum Whatsgramy-0.2.0-preview.apk > SHA256SUMS.txt
           cat > notes.md <<'NOTES'
-          Initial Whatsgramy attachment archive preview.
+          Whatsgramy recovery metadata preview.
 
           Requires your private backend, Telegram login and WhatsApp linked-device pairing. See README for setup.
-          Includes chat/file browsing, verified Telegram fallback downloads, separate local storage, configurable 15-day cleanup, pinning and Settings switches.
+          Adds automatic Saved Messages recovery indexes, upload/activity history, per-type counts and byte totals, original Telegram destination references, duplicate-upload avoidance, and metadata backup controls.
+          This preview still uses the private backend. The direct-on-phone WhatsApp/Telegram engine is not implemented yet.
           Backend lifecycle tests and Android emulator installation/startup checks passed. Live account pairing and capture still require testing with your own accounts.
           Debug-signed preview; signing keys can differ between builds. Stable production signing has not been configured.
           NOTES
-          gh release create "preview-$GITHUB_RUN_NUMBER" Whatsgramy-0.1.0-preview.apk SHA256SUMS.txt --target "$GITHUB_SHA" --title "Whatsgramy 0.1.0 preview (build $GITHUB_RUN_NUMBER)" --notes-file notes.md --prerelease
+          gh release create "preview-$GITHUB_RUN_NUMBER" Whatsgramy-0.2.0-preview.apk SHA256SUMS.txt --target "$GITHUB_SHA" --title "Whatsgramy 0.2.0 preview (build $GITHUB_RUN_NUMBER)" --notes-file notes.md --prerelease

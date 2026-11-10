@@ -25,6 +25,7 @@ class MediaCache(private val context: Context): SQLiteOpenHelper(context,"local-
     fun delete(id: String){synchronized(Downloads.locks.getOrPut(id){Any()}){local(id)?.let { check(it.delete()) { "Could not delete the local copy" } };writableDatabase.execSQL("UPDATE media SET path=NULL WHERE id=?",arrayOf(id))}}
     fun cleanup(days: Int){val cutoff=System.currentTimeMillis()-days.coerceIn(1,365)*86400000L;val ids=readableDatabase.rawQuery("SELECT id FROM media WHERE path IS NOT NULL AND pinned=0 AND downloaded<=?",arrayOf(cutoff.toString())).use { c->buildList { while(c.moveToNext())add(c.getString(0)) } };ids.forEach(::delete)}
     fun folder()=root.absolutePath
+    fun fileCount(): Int=root.listFiles().orEmpty().count { it.isFile&&!it.name.endsWith(".part") }
     fun bytes(): Long=root.listFiles().orEmpty().filter { !it.name.endsWith(".part") }.sumOf { it.length() }
     fun ensure(item: JSONObject): File {
         val id=item.optString("media_id").ifBlank { item.getString("id") }

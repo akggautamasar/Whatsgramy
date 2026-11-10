@@ -13,3 +13,33 @@ test('authenticated API rejects unauthenticated access and validates settings an
 test('view-once and disappearing-message wrappers are excluded',()=>{assert.equal(classify({viewOnceMessage:{message:{imageMessage:{}}}}),null);assert.equal(classify({ephemeralMessage:{message:{videoMessage:{}}}}),null);assert.equal(classify({documentMessage:{fileName:'x.pdf',mimetype:'application/pdf'}}).kind,'documents');});
 test('encrypted index rejects tampering and wrong recovery key',()=>{const k=randomBytes(32),b=seal({version:1},k);b[b.length-1]^=1;assert.throws(()=>unseal(b,k));assert.throws(()=>unseal(seal({},k),randomBytes(32)));});
 test('disabled media types cannot block eligible attachments behind a large backlog',async t=>{const f=await fixture(t);f.store.updateSettings({photos:false});for(let i=0;i<150;i++)f.store.insertMedia({id:'p'+i,chatId:'chat',messageId:'p'+i,name:'p.jpg',mime:'image/jpeg',kind:'photos',size:1,raw:'{}'});f.store.db.prepare('UPDATE media SET rowid=1000 WHERE id=?').run(f.id);const queue=f.store.queue(Date.now(),['documents']);assert.deepEqual(queue.map(m=>m.id),[f.id]);});
+test('login-only recovery discovers Saved Messages metadata and falls back past a corrupt checkpoint',async t=>{
+ const f=await fixture(t);f.archive.indexMode='telegram';f.tg.accountId='123';await f.archive.tick();f.store.updateSettings({retentionDays:30});await f.archive.tick();
+ const {recoverArchive,decodeSnapshot}=await import('../src/metadata.js');const latest=f.snapshots.at(-1);const snap=decodeSnapshot(latest);
+ assert.equal(snap.summary.verified,1);assert.equal(snap.media[0].name,'Order.pdf');assert.ok(snap.media[0].uploaded_at);assert.ok(snap.events.some(e=>e.type==='uploaded'));assert.equal(snap.settings.retentionDays,30);
+ assert.equal('path' in snap.media[0],false);assert.equal('raw' in snap.media[0],false);
+ const restored=new Store(join(f.dir,'auto-restored.db'));try{
+  const source={accountId:'123',async *readManifests(){yield {download:async()=>Buffer.from('broken')};yield {download:async()=>latest};}};
+  const result=await recoverArchive(restored,source);assert.equal(result.status,'restored');assert.equal(restored.stats().verified,1);assert.equal(restored.settings().retentionDays,30);assert.equal(restored.get(f.id).telegram_id,42);assert.equal(restored.get(f.id).path,null);
+  assert.equal(restored.history().filter(e=>e.type==='uploaded').length,f.store.history().filter(e=>e.type==='uploaded').length);
+  source.readManifests=()=>{throw Error('An existing local archive must not be overwritten');};assert.equal((await recoverArchive(restored,source)).status,'existing');
+ }finally{restored.close();}
+});
+test('pending records recover as needs-source and a matching WhatsApp message revives them',async t=>{
+ const f=await fixture(t);const {encodeSnapshot,decodeSnapshot}=await import('../src/metadata.js');const snapshot=decodeSnapshot(encodeSnapshot(f.store.snapshot()));
+ const recovered=new Store(join(f.dir,'pending-restore.db'));try{recovered.restore(snapshot);assert.equal(recovered.get(f.id).status,'needs_source');assert.equal(recovered.stats().uploaded,0);assert.equal(recovered.queue().length,0);
+  recovered.insertMedia({id:f.id,chatId:'chat',messageId:'wa-123',name:'Order.pdf',mime:'application/pdf',kind:'documents',size:f.bytes.length,raw:'new-message'});assert.equal(recovered.get(f.id).status,'queued');assert.equal(recovered.get(f.id).raw,'new-message');
+ }finally{recovered.close();}
+});
+test('wrong-account and unreadable recovery indexes are rejected without changing records',async t=>{
+ const f=await fixture(t);const {encodeSnapshot,recoverArchive}=await import('../src/metadata.js');const bytes=encodeSnapshot({...f.store.snapshot(),telegramAccountId:'other'});const empty=new Store(join(f.dir,'wrong-account.db'));
+ try{await assert.rejects(recoverArchive(empty,{accountId:'mine',async *readManifests(){yield {download:async()=>bytes};}}),/different Telegram account/);assert.equal(empty.stats().total,0);assert.equal(empty.syncState().recovery_status,'error');}finally{empty.close();}
+});
+test('same content in two messages reuses the existing Telegram upload and keeps both chat mappings',async t=>{
+ const f=await fixture(t);await f.archive.tick();const second='b'.repeat(64);f.store.insertMedia({id:second,chatId:'chat',messageId:'wa-456',name:'Forwarded.pdf',mime:'application/pdf',kind:'documents',size:f.bytes.length,raw:'{}'});await f.archive.tick();assert.equal(f.getUploads(),1);assert.equal(f.store.stats().verified,2);assert.equal(f.store.stats().unique_verified_files,1);assert.equal(f.store.get(second).telegram_id,42);
+});
+test('metadata switch pauses automatic checkpoints and uncheckpointed files cannot be cleaned up',async t=>{
+ const f=await fixture(t);f.store.updateSettings({autoMetadata:false});await f.archive.tick();assert.equal(f.snapshots.length,0);await assert.rejects(f.archive.deleteLocal(f.id),/recovery index/);await f.archive.backupIndex();assert.equal(f.snapshots.length,1);await f.archive.deleteLocal(f.id);assert.equal(f.store.get(f.id).path,null);
+});
+test('switching Telegram accounts cannot reuse another local archive',async t=>{const f=await fixture(t);f.store.bindTelegramAccount('original');const {recoverArchive}=await import('../src/metadata.js');await assert.rejects(recoverArchive(f.store,{accountId:'different'}),/another Telegram account/);assert.equal(f.store.get(f.id).status,'queued');assert.equal(f.store.syncState().recovery_status,'error');await assert.rejects(f.archive.backupIndex(),/recovery error/);});
+test('serialized Telegram channel references survive a new default destination',async()=>{const {TelegramArchive}=await import('../src/telegram.js');const {Api}=await import('telegram');const bigInt=(await import('big-integer')).default;const adapter=new TelegramArchive({destination:'me'});adapter.authorized=true;adapter.client={};const peer=new Api.InputPeerChannel({channelId:bigInt('123456789'),accessHash:bigInt('987654321012345')});const recovered=await adapter.peer(adapter.describePeer(peer));assert.equal(recovered.channelId.toString(),'123456789');assert.equal(recovered.accessHash.toString(),'987654321012345');});
