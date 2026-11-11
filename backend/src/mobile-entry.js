@@ -16,7 +16,7 @@ const cfg={...credentials,dir,token:privateConfig.token,indexKey:Buffer.from(pri
 // Opening SQLite here makes missing runtime support a startup failure, visible to CI.
 const probe=new DatabaseSync(':memory:');probe.exec('CREATE TABLE runtime_test(value TEXT)');probe.close();
 const store=new Store(join(dir,'archive.sqlite')),tg=new TelegramArchive(cfg),wa=new WhatsAppConnection({dir,store});
-const archive=new Archive({store,telegram:tg,download:(...args)=>wa.download(...args),dir:join(dir,'media'),indexKey:cfg.indexKey,indexMode:cfg.indexMode});
+const archive=new Archive({store,telegram:tg,download:(...args)=>wa.download(...args),dir:join(dir,'media'),indexKey:cfg.indexKey,indexMode:cfg.indexMode,batchSize:10});
 let recovered=false;
 async function recover(){recovered=false;await recoverArchive(store,tg,cfg.indexKey);recovered=true;}
 

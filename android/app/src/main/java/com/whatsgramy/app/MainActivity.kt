@@ -66,7 +66,7 @@ class MainActivity:ComponentActivity(){
         val bar=LinearLayout(this).apply{minimumHeight=dp(60);gravity=Gravity.CENTER_VERTICAL;setPadding(dp(14),dp(4),dp(8),dp(4));setBackgroundColor(Color.WHITE)}
         if(onBack!=null)bar.addView(icon("Back"){onBack()},LinearLayout.LayoutParams(dp(40),dp(48)))
         if(description.startsWith("WhatsApp conversation"))bar.addView(avatar(name,38),LinearLayout.LayoutParams(dp(38),dp(38)).apply{rightMargin=dp(10)})
-        val headings=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL};title=text(name,if(onBack==null)27f else 18f,true).apply{maxLines=1;ellipsize=android.text.TextUtils.TruncateAt.END;if(name=="Whatsgramy")setTextColor(green)};subtitle=text(description,12f).apply{maxLines=1;ellipsize=android.text.TextUtils.TruncateAt.END;setTextColor(muted);visibility=if(description.isBlank())View.GONE else View.VISIBLE};headings.addView(title);headings.addView(subtitle);bar.addView(headings,LinearLayout.LayoutParams(0,-2,1f));bar.addView(icon("Refresh"){if(refreshPage!=null){refreshPage?.invoke()}else when(activeTab){"Files"->showFiles();"Settings"->showSettings();else->showChats()}},LinearLayout.LayoutParams(dp(44),dp(48)));root.addView(bar,LinearLayout.LayoutParams(-1,-2))
+        val headings=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL};title=text(name,if(onBack==null)27f else 18f,true).apply{maxLines=1;ellipsize=android.text.TextUtils.TruncateAt.END;if(name=="Whatsgramy")setTextColor(green)};subtitle=text(description,12f).apply{maxLines=1;ellipsize=android.text.TextUtils.TruncateAt.END;setTextColor(muted);visibility=if(description.isBlank())View.GONE else View.VISIBLE};headings.addView(title);headings.addView(subtitle);bar.addView(headings,LinearLayout.LayoutParams(0,-2,1f));bar.addView(icon("Refresh"){if(refreshPage!=null){refreshPage?.invoke()}else when(activeTab){"Files"->showFiles();"Settings"->showSettings();"Transfers"->showHistory();else->showChats()}},LinearLayout.LayoutParams(dp(44),dp(48)));root.addView(bar,LinearLayout.LayoutParams(-1,-2))
         scroll=ScrollView(this).apply{isFillViewport=true;clipToPadding=false};body=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setPadding(0,0,0,dp(14));setBackgroundColor(if(activeTab=="Settings")Color.rgb(246,248,247)else Color.WHITE)};scroll.addView(body);root.addView(scroll,LinearLayout.LayoutParams(-1,0,1f))
         if(onBack==null){val nav=LinearLayout(this).apply{gravity=Gravity.CENTER;setPadding(dp(6),dp(6),dp(6),dp(6));setBackgroundColor(Color.WHITE)}
             listOf("Chats","Files","Transfers","Settings").forEach{tab->val item=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;gravity=Gravity.CENTER;contentDescription=tab;setOnClickListener{when(tab){"Chats"->showChats();"Files"->showFiles();"Transfers"->showHistory();else->showSettings()}}};val pill=FrameLayout(this).apply{if(activeTab==tab)background=rounded(Color.rgb(217,253,211),24);addView(ArchiveIcon(this@MainActivity,tab,if(activeTab==tab)green else muted),FrameLayout.LayoutParams(dp(24),dp(24),Gravity.CENTER))};item.addView(pill,LinearLayout.LayoutParams(dp(62),dp(30)));item.addView(text(tab,12f,activeTab==tab));nav.addView(item,LinearLayout.LayoutParams(0,dp(58),1f))};root.addView(nav)}
@@ -96,7 +96,7 @@ class MainActivity:ComponentActivity(){
                     val signature=result.toString()+MediaCache(this@MainActivity).use{it.fileCount().toString()}
                     if(signature!=previous){render(result);withContext(Dispatchers.IO){remember(path,query,result)};previous=signature}
                     line.text="Live · updated ${time(System.currentTimeMillis())}";line.setTextColor(green)
-                    statusPanel?.let{target->try{val state=request("/api/status");val key=state.toString();if(key!=summarySignature){target.removeAllViews();statusSummary(target,state);summarySignature=key}}catch(e:CancellationException){throw e}catch(_:Exception){}}
+                    statusPanel?.let{target->try{val state=request("/api/status");val key=state.toString();if(key!=summarySignature){target.removeAllViews();statusSummary(target,state);withContext(Dispatchers.IO){remember("/api/status",emptyMap(),state)};summarySignature=key}}catch(e:CancellationException){throw e}catch(_:Exception){}}
                 }catch(e:CancellationException){throw e}catch(e:Exception){
                     line.text=if(previous.isEmpty())"Archive is starting or disconnected. Tap to resume."else"Connection paused · showing last loaded data · tap to resume"
                     line.setTextColor(Color.rgb(158,101,31));line.setOnClickListener{runCatching{EngineService.start(this@MainActivity)}}
@@ -141,9 +141,53 @@ class MainActivity:ComponentActivity(){
     }
     private fun details(m:JSONObject){val saved=cloudSaved(m);val message="${phase(m)}\n\nTelegram backup: ${if(saved)"Verified and saved"else if(m.optLong("telegram_id")>0)"Uploaded; verification pending"else"Not saved yet"}\nOn this phone: ${if(onPhone(m))"Yes"else"No"}\nSize: ${formatSize(m.optLong("size"))}\nTelegram message: ${str(m,"telegram_id","Not uploaded yet")}\nUploaded: ${if(m.optLong("uploaded_at")>0)date(m.optLong("uploaded_at"))+" "+time(m.optLong("uploaded_at"))else"Not yet"}\n${str(m,"error")}\n\nSHA-256: ${str(m,"sha256","Not verified yet")}";AlertDialog.Builder(this).setTitle(str(m,"name","File details")).setMessage(message).setPositiveButton("OK",null).show()}
     private fun manage(m:JSONObject,refresh:()->Unit){val id=mediaId(m);val pinned=m.optInt("pinned")==1||MediaCache(this).use{it.pinned(id)};val choices=mutableListOf("File details");if(cloudSaved(m)){choices.add(if(pinned)"Allow automatic local cleanup"else"Keep on this phone");choices.add("Delete phone copies · keep Telegram backup")};if(str(m,"status")=="failed")choices.add("Retry backup");AlertDialog.Builder(this).setTitle(str(m,"name")).setItems(choices.toTypedArray()){_,which->when(choices[which]){"File details"->details(m);"Retry backup"->runWork{request("/api/media/$id/retry","POST");refresh()};"Keep on this phone","Allow automatic local cleanup"->runWork{request("/api/media/$id/pin","POST",JSONObject().put("pinned",!pinned));withContext(Dispatchers.IO){MediaCache(this@MainActivity).use{if(!pinned)it.ensure(m);it.pin(id,!pinned)}};refresh()};else->AlertDialog.Builder(this).setTitle("Delete local copies?").setMessage("The verified Telegram backup and this chat entry will stay. Tap the file later to download it again.").setNegativeButton("Cancel",null).setPositiveButton("Delete local"){_,_->runWork{request("/api/media/$id/delete-local","POST");withContext(Dispatchers.IO){MediaCache(this@MainActivity).use{it.delete(id)}};refresh()}}.show()}}.show()}
-    private fun showFiles(query:String="",cursor:Long=0,filter:String="All"){activeTab="Files";page("Files");searchBox("Search filenames",query){showFiles(it,0,filter)};chips(listOf("All","On phone","Telegram","In progress","Failed"),filter){showFiles(query,0,it)};val line=connectionLine();val panel=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL};body.addView(panel);live("/api/media",mapOf("q" to query,"cursor" to cursor.toString(),"limit" to "100"),line){data->val y=scroll.scrollY;panel.removeAllViews();val all=jsonItems(data).rows();val rows=all.filter{when(filter){"On phone"->onPhone(it);"Telegram"->cloudSaved(it);"In progress"->str(it,"status") !in listOf("verified","failed","needs_source");"Failed"->str(it,"status") in listOf("failed","needs_source");else->true}};panel.addView(text("${rows.size} files on this page · long-press to manage",11f).apply{setTextColor(muted);setPadding(dp(20),dp(4),dp(20),dp(8))});if(rows.isEmpty())empty(panel,"No ${if(filter=="All")"files"else filter.lowercase()+" files"} here",if(filter=="All")"New attachments appear here with their Telegram and phone status."else"Choose another filter, or check the next page.");rows.forEach{fileRow(panel,it){showFiles(query,cursor,filter)}};if(all.size==100)panel.addView(button("Next files"){showFiles(query,all.last().getLong("cursor"),filter)});scroll.post{scroll.scrollTo(0,y)}}}
-    private fun showHistory(before:Long=Long.MAX_VALUE,beforeId:String=""){activeTab="Transfers";page("Transfers","Telegram backups and phone storage");val line=connectionLine();val summary=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL};body.addView(summary);val panel=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL};body.addView(panel)
-        val g=generation;pollJob=lifecycleScope.launch{repeatOnLifecycle(Lifecycle.State.STARTED){var signature="";while(isActive&&g==generation){try{val status=request("/api/status");val history=request("/api/history",query=mapOf("before" to before.toString(),"beforeId" to beforeId,"limit" to "60"));val next=status.toString()+history.toString();if(next!=signature){withContext(Dispatchers.IO){remember("/api/status",emptyMap(),status)};val y=scroll.scrollY;summary.removeAllViews();statusSummary(summary,status);panel.removeAllViews();val active=status.optJSONArray("transfers")?.rows().orEmpty();active.filter{it.optString("phase") in listOf("uploading","downloading","verifying")}.forEach{t->card(panel).addView(text("${str(t,"name")}\n${str(t,"phase")}${if(t.isNull("percent"))""else" · ${t.optInt("percent")}%"}",14f,true))};val events=jsonItems(history).rows();if(events.isEmpty())empty(panel,"No transfers yet","Receive an attachment in WhatsApp after connecting your accounts.");events.forEach{e->val row=LinearLayout(this@MainActivity).apply{orientation=LinearLayout.VERTICAL;setPadding(dp(20),dp(12),dp(20),dp(12))};row.addView(text(str(e,"name","Archive activity"),14f,true));val label=when(str(e,"type")){"verified"->"✓ Saved to Telegram · verified";"uploading"->"Uploading to Telegram";"uploaded"->"Uploaded · awaiting verification";"downloaded"->"Downloaded on this phone";"local_removed"->"Removed from phone · Telegram copy kept";"retrieved_from_telegram"->"Downloaded back from Telegram";else->str(e,"type").replace('_',' ')};row.addView(text(label,12f).apply{setTextColor(if(e.optString("type")=="verified")green else muted)});row.addView(text("${date(e.optLong("timestamp"))} ${time(e.optLong("timestamp"))} · ${formatSize(e.optLong("bytes"))}",11f).apply{setTextColor(muted)});if(str(e,"detail").isNotBlank())row.addView(text(str(e,"detail"),12f));panel.addView(row)};if(events.size==60)panel.addView(button("Earlier transfers"){val e=events.last();showHistory(e.getLong("timestamp"),e.getString("id"))});signature=next;scroll.post{scroll.scrollTo(0,y)}};line.text="Live transfer activity · updated ${time(System.currentTimeMillis())}";line.setTextColor(green)}catch(e:CancellationException){throw e}catch(e:Exception){line.text="Can't connect to the archive · tap to resume";line.setOnClickListener{EngineService.start(this@MainActivity)};if(summary.childCount==0)cached("/api/status",emptyMap())?.let{statusSummary(summary,it)}};delay(2500)}}}
+    private fun showFiles(query:String="",cursor:Long=0,filter:String="All"){activeTab="Files";page("Files");searchBox("Search filenames",query){showFiles(it,0,filter)};chips(listOf("All","On phone","Telegram","In progress","Failed"),filter){showFiles(query,0,it)};val line=connectionLine();val panel=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL};body.addView(panel);live("/api/media",mapOf("q" to query,"cursor" to cursor.toString(),"limit" to "30"),line){data->val y=scroll.scrollY;panel.removeAllViews();val all=jsonItems(data).rows();val rows=all.filter{when(filter){"On phone"->onPhone(it);"Telegram"->cloudSaved(it);"In progress"->str(it,"status") !in listOf("verified","failed","needs_source");"Failed"->str(it,"status") in listOf("failed","needs_source");else->true}};panel.addView(text("${rows.size} files on this page · long-press to manage",11f).apply{setTextColor(muted);setPadding(dp(20),dp(4),dp(20),dp(8))});if(rows.isEmpty())empty(panel,"No ${if(filter=="All")"files"else filter.lowercase()+" files"} here",if(filter=="All")"New attachments appear here with their Telegram and phone status."else"Choose another filter, or check the next page.");rows.forEach{fileRow(panel,it){showFiles(query,cursor,filter)}};if(all.size==30)panel.addView(button("Next files"){showFiles(query,all.last().getLong("cursor"),filter)});scroll.post{scroll.scrollTo(0,y)}}}
+    private fun showHistory(before:Long=Long.MAX_VALUE,beforeId:String="") {
+        activeTab = "Transfers"
+        page("Transfers", "Telegram backups and phone storage")
+        refreshPage = { showHistory(before, beforeId) }
+        val line = connectionLine()
+        val summary = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        statusPanel = summary
+        body.addView(summary)
+        cached("/api/status", emptyMap())?.let { statusSummary(summary, it) }
+        val panel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        body.addView(panel)
+        val query = mapOf("before" to before.toString(), "beforeId" to beforeId, "limit" to "60")
+        live("/api/history", query, line) { history ->
+            val position = scroll.scrollY
+            panel.removeAllViews()
+            val events = jsonItems(history).rows()
+            if (events.isEmpty()) empty(panel, "No transfers yet", "Attachment activity will appear here.")
+            for (event in events) {
+                val row = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(dp(20), dp(12), dp(20), dp(12))
+                }
+                val type = str(event, "type")
+                val label = when (type) {
+                    "verified" -> "✓ Saved to Telegram · verified"
+                    "uploading" -> "Uploading to Telegram"
+                    "uploaded" -> "Uploaded · awaiting verification"
+                    "downloaded" -> "Downloaded on this phone"
+                    "local_removed" -> "Removed from phone · Telegram copy kept"
+                    "retrieved_from_telegram" -> "Downloaded back from Telegram"
+                    else -> type.replace('_', ' ')
+                }
+                row.addView(text(str(event, "name", "Archive activity"), 14f, true))
+                row.addView(text(label, 12f).apply { setTextColor(if (type == "verified") green else muted) })
+                val timestamp = event.optLong("timestamp")
+                row.addView(text("${date(timestamp)} ${time(timestamp)} · ${formatSize(event.optLong("bytes"))}", 11f))
+                val detail = str(event, "detail")
+                if (detail.isNotBlank()) row.addView(text(detail, 12f))
+                panel.addView(row)
+            }
+            if (events.size == 60) panel.addView(button("Earlier transfers") {
+                val last = events.last()
+                showHistory(last.getLong("timestamp"), last.getString("id"))
+            })
+            scroll.post { scroll.scrollTo(0, position) }
+        }
     }
     private fun switch(parent:LinearLayout,label:String,detail:String,checked:Boolean,changed:(Boolean)->Unit){val sw=Switch(this).apply{text=label;textSize=15f;isChecked=checked;setTextColor(ink);setPadding(dp(2),dp(10),dp(2),dp(10));thumbTintList=android.content.res.ColorStateList(arrayOf(intArrayOf(android.R.attr.state_checked),intArrayOf()),intArrayOf(green,Color.LTGRAY));setOnCheckedChangeListener{_,v->changed(v)}};parent.addView(sw);if(detail.isNotBlank())parent.addView(text(detail,12f).apply{setTextColor(muted)})}
     private fun showSettings(){activeTab="Settings";page("Settings","Everything is under your control")
@@ -154,7 +198,30 @@ class MainActivity:ComponentActivity(){
         val phone=card();phone.addView(text("Downloads & storage",18f,true));switch(phone,"Download archived attachments automatically","Runs periodically while Android allows background work.",cfg.autoDownload){cfg.autoDownload=it;ArchiveSync.schedule(this)};switch(phone,"Wi-Fi only for automatic downloads","Manual opening can use your current connection.",cfg.wifiOnly){cfg.wifiOnly=it;ArchiveSync.schedule(this)};switch(phone,"Clean up this phone's local copies","Uses the archive retention period. Pinned copies are kept.",cfg.cleanup){cfg.cleanup=it}
         MediaCache(this).use{phone.addView(text("Downloaded for viewing: ${it.fileCount()} files · ${formatSize(it.bytes())}",12f))}
         val engineState=text("Loading connections and backup controls…",13f);body.addView(engineState)
-        val g=generation;runWork{val status=request("/api/status");if(g!=generation)return@runWork;engineState.text="Backup service connected"
+        val g = generation
+        runWork {
+            var response: JSONObject? = null
+            for (attempt in 1..3) {
+                try {
+                    response = request("/api/status")
+                    break
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    if (g != generation) return@runWork
+                    engineState.text = "Waiting for the archive service…"
+                    if (attempt < 3) delay(1200)
+                }
+            }
+            if (g != generation) return@runWork
+            val status = response ?: run {
+                engineState.text = "Archive service unavailable. Tap to retry or use Resume backup."
+                engineState.setOnClickListener { showSettings() }
+                return@runWork
+            }
+            withContext(Dispatchers.IO) { remember("/api/status", emptyMap(), status) }
+            if (g != generation) return@runWork
+            engineState.text = "Backup service connected"
             val accounts=card();accounts.addView(text("Connected accounts",18f,true));val wa=status.getJSONObject("whatsapp");accounts.addView(text("WhatsApp: ${wa.optString("connection")}\nTelegram: ${if(status.getJSONObject("telegram").optBoolean("connected"))"connected"else"not connected"}"));if(!status.getJSONObject("telegram").optBoolean("connected"))telegramLogin(accounts)
             accounts.addView(button("Refresh WhatsApp connection"){runWork{request("/api/whatsapp/start","POST");showSettings()}})
             val number=EditText(this).apply{hint="WhatsApp number with country code, digits only";inputType=InputType.TYPE_CLASS_PHONE};accounts.addView(number);accounts.addView(button("Get pairing code"){runWork{val response=request("/api/whatsapp/pair","POST",JSONObject().put("phone",number.text.toString().filter{it.isDigit()}));AlertDialog.Builder(this@MainActivity).setTitle("Link Whatsgramy").setMessage("In WhatsApp → Linked devices → Link a device → Link with phone number, enter:\n\n${response.getString("code")}").setPositiveButton("OK",null).show()}})

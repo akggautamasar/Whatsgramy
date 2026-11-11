@@ -18,6 +18,12 @@ export class Store {
       CREATE TABLE IF NOT EXISTS media (id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, message_id TEXT NOT NULL, name TEXT NOT NULL, mime TEXT NOT NULL, kind TEXT NOT NULL, size INTEGER NOT NULL DEFAULT 0, raw TEXT, status TEXT NOT NULL DEFAULT 'queued', path TEXT, sha256 TEXT, telegram_id INTEGER, verified_at INTEGER, manifest_at INTEGER, downloaded_at INTEGER, pinned INTEGER NOT NULL DEFAULT 0, attempts INTEGER NOT NULL DEFAULT 0, retry_at INTEGER NOT NULL DEFAULT 0, error TEXT);
       CREATE INDEX IF NOT EXISTS archive_queue ON media(status,retry_at);
       CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, media_id TEXT, type TEXT NOT NULL, timestamp INTEGER NOT NULL, bytes INTEGER NOT NULL DEFAULT 0, detail TEXT);`);
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS media_by_chat ON media(chat_id);
+      CREATE INDEX IF NOT EXISTS media_by_chat_status ON media(chat_id,status);
+      CREATE INDEX IF NOT EXISTS chats_by_updated ON chats(updated DESC);
+      CREATE INDEX IF NOT EXISTS events_by_time ON events(timestamp DESC,id DESC);
+    `);
     const columns = new Set(this.db.prepare('PRAGMA table_info(media)').all().map(c=>c.name));
     for (const [key,type] of Object.entries({created_at:'INTEGER',uploaded_at:'INTEGER',telegram_peer:'TEXT'})) if(!columns.has(key))this.db.exec(`ALTER TABLE media ADD COLUMN ${key} ${type}`);
     if(!this.db.prepare('PRAGMA table_info(sync_state)').all().some(c=>c.name==='telegram_account_id'))this.db.exec('ALTER TABLE sync_state ADD COLUMN telegram_account_id TEXT');
@@ -26,6 +32,16 @@ export class Store {
     this.db.prepare("UPDATE media SET status='queued' WHERE status IN ('downloading','uploading','verifying')").run();
   }
   describeMedia(m){if(!m)return m;const actual=m.path??(m.media_id?this.get(m.media_id)?.path:null);return {...m,path:undefined,raw:undefined,device_local:!!actual&&existsSync(actual),telegram_saved:m.status==='verified'&&!!m.telegram_id&&!!m.verified_at};}
+  batch(write) {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      write();
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
   close(){this.db.close();}
   changed(){this.db.prepare('UPDATE sync_state SET revision=revision+1 WHERE id=1').run();}
   syncState(){return this.db.prepare('SELECT * FROM sync_state WHERE id=1').get();}
@@ -72,7 +88,7 @@ export class Store {
     if('path' in fields&&fields.path===null&&old.path)this.event(id,'local_removed',old.size);
     if('pinned' in fields&&old.pinned!==fields.pinned)this.event(id,fields.pinned?'pinned':'unpinned');
   }
-  queue(now=Date.now(),kinds=KINDS){if(!kinds.length)return [];return this.db.prepare(`SELECT * FROM media WHERE status IN ('queued','failed','downloaded','uploaded') AND retry_at<=? AND attempts<20 AND kind IN (${kinds.map(()=>'?').join(',')}) ORDER BY rowid LIMIT 100`).all(now,...kinds);}
+  queue(now=Date.now(),kinds=KINDS,limit=100){if(!kinds.length)return [];return this.db.prepare(`SELECT * FROM media WHERE status IN ('queued','failed','downloaded','uploaded') AND retry_at<=? AND attempts<20 AND kind IN (${kinds.map(()=>'?').join(',')}) ORDER BY rowid LIMIT ?`).all(now,...kinds,limit);}
   listMedia(cursor=0,limit=100,query=''){return this.db.prepare('SELECT rowid AS cursor,path,id,chat_id,message_id,name,mime,kind,size,status,sha256,telegram_id,telegram_peer,created_at,uploaded_at,verified_at,downloaded_at,pinned,attempts,error FROM media WHERE rowid>? AND name LIKE ? ORDER BY rowid LIMIT ?').all(cursor,`%${query}%`,limit).map(m=>this.describeMedia(m));}
   chats(){return this.db.prepare(`SELECT c.*, (SELECT text FROM messages WHERE chat_id=c.id ORDER BY timestamp DESC LIMIT 1) AS preview,(SELECT COUNT(*) FROM media WHERE chat_id=c.id) AS files,(SELECT COUNT(*) FROM media WHERE chat_id=c.id AND status='verified') AS saved_files,(SELECT name FROM media WHERE chat_id=c.id ORDER BY rowid DESC LIMIT 1) AS last_file FROM chats c ORDER BY updated DESC LIMIT 500`).all();}
   messages(chat,before=Number.MAX_SAFE_INTEGER,beforeId=''){return this.db.prepare('SELECT m.*,a.name,a.mime,a.kind,a.size,a.status,a.sha256,a.verified_at,a.created_at,a.uploaded_at,a.telegram_id,a.telegram_peer,a.path,a.pinned,a.error,a.downloaded_at FROM messages m LEFT JOIN media a ON a.id=m.media_id WHERE m.chat_id=? AND (m.timestamp<? OR (m.timestamp=? AND m.id<?)) ORDER BY m.timestamp DESC,m.id DESC LIMIT 100').all(chat,before,before,beforeId).map(m=>this.describeMedia(m));}

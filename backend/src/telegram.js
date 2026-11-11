@@ -19,8 +19,41 @@ export class TelegramArchive {
   throw Error('Unknown Telegram archive destination');
  }
  describePeer(p){if(p instanceof Api.InputPeerSelf)return JSON.stringify({type:'self'});if(p instanceof Api.InputPeerChannel)return JSON.stringify({type:'channel',id:String(p.channelId),accessHash:String(p.accessHash)});if(p instanceof Api.InputPeerUser)return JSON.stringify({type:'user',id:String(p.userId),accessHash:String(p.accessHash)});if(p instanceof Api.InputPeerChat)return JSON.stringify({type:'chat',id:String(p.chatId)});throw Error('Unsupported Telegram destination');}
- async upload(path,m,onProgress=()=>{}){const c=this.ready(),peer=await this.peer(),caption=`wg:${m.id}`;const old=await c.getMessages(peer,{search:caption,limit:5});const found=old.find(x=>x.message===caption&&x.media);if(found)return {id:found.id,peer:this.describePeer(peer)};const sent=await c.sendFile(peer,{file:new CustomFile(m.name,m.size,path),forceDocument:true,caption,workers:1,progressCallback:p=>onProgress(Number(p)*m.size,m.size)});return {id:sent.id,peer:this.describePeer(peer)};}
- async download(id,path,reference){const c=this.ready(),peer=await this.peer(reference);const [m]=await c.getMessages(peer,{ids:[id]});if(!m?.media)throw Error('Telegram backup no longer exists');await c.downloadMedia(m,{outputFile:path});}
+ async upload(path, media, onProgress = () => {}, signal) {
+  const client = this.ready();
+  const peer = await this.peer();
+  signal?.throwIfAborted();
+  const caption = `wg:${media.id}`;
+  const recent = await client.getMessages(peer, {search: caption, limit: 5});
+  signal?.throwIfAborted();
+  const existing = recent.find(message => message.message === caption && message.media);
+  if (existing) return {id: existing.id, peer: this.describePeer(peer)};
+
+  const progress = fraction => onProgress(Number(fraction) * media.size, media.size);
+  Object.defineProperty(progress, 'isCanceled', {get: () => !!signal?.aborted});
+  const file = await client.uploadFile({file: new CustomFile(media.name, media.size, path), workers: 1, onProgress: progress});
+  signal?.throwIfAborted();
+  const sent = await client.sendFile(peer, {
+   file, caption, forceDocument: true, mimeType: media.mime,
+   attributes: [new Api.DocumentAttributeFilename({fileName: media.name})],
+  });
+  return {id: sent.id, peer: this.describePeer(peer)};
+ }
+ async download(id, path, reference, onProgress = () => {}, signal) {
+  const client = this.ready();
+  const peer = await this.peer(reference);
+  signal?.throwIfAborted();
+  const [message] = await client.getMessages(peer, {ids: [id]});
+  signal?.throwIfAborted();
+  if (!message?.media) throw Error('Telegram backup no longer exists');
+  await client.downloadMedia(message, {
+   outputFile: path,
+   progressCallback: (bytes, total) => {
+    signal?.throwIfAborted();
+    onProgress(Number(bytes), Number(total));
+   },
+  });
+ }
  async backupIndex(bytes){const encrypted=bytes[0]!==123;const file=new CustomFile(encrypted?'whatsgramy-manifest.enc':'whatsgramy-manifest.json',bytes.length,'',bytes);const sent=await this.ready().sendFile('me',{file,forceDocument:true,caption:MARKER,workers:1});return sent.id;}
  async *readManifests(){
   const c=this.ready();const sources=['me'];if(this.cfg.destination!=='me')sources.push(this.cfg.destination);

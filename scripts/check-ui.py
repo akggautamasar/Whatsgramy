@@ -44,6 +44,12 @@ for i,(id,name,mime,kind,status,size,path,tg) in enumerate(items):
  db.execute('INSERT OR REPLACE INTO events VALUES(?,?,?,?,?,?)',('fixture-event-'+str(i),id,status,now-i*1000,size,None))
 db.execute('INSERT OR REPLACE INTO messages(id,chat_id,sender,text,timestamp,media_id,from_me) VALUES(?,?,?,?,?,?,?)',('fixture-reply',chat,'You','Thanks, I can open these from Whatsgramy.',now-20000,None,1))
 for i in range(1,5):db.execute('INSERT OR REPLACE INTO messages(id,chat_id,sender,text,timestamp,media_id,from_me) VALUES(?,?,?,?,?,?,?)',('fixture-chat-'+str(i),'fixture-'+str(i),'Member','The next update will be shared here.',now-i*60000,None,0))
+# Exercise the installed app with the same archive size as the reported issue.
+db.executemany(
+ 'INSERT INTO media(id,chat_id,message_id,name,mime,kind,size,status,created_at) VALUES(?,?,?,?,?,?,?,?,?)',
+ ((f'{10000+i:064x}', 'fixture-'+str(1+i%4), f'history-{i}', f'Old photo {i}.jpg',
+   'image/jpeg', 'photos', 180000, 'queued', now-86400000-i) for i in range(5670)),
+)
 db.commit();db.execute('PRAGMA wal_checkpoint(TRUNCATE)');db.close()
 adb('push','ui-test.sqlite','/data/local/tmp/wg-ui.sqlite');shell(*base,'rm','-f','files/engine/archive.sqlite-wal','files/engine/archive.sqlite-shm');shell(*base,'cp','/data/local/tmp/wg-ui.sqlite','files/engine/archive.sqlite')
 adb('push','ui-test.png','/data/local/tmp/wg-ui.png');shell(*base,'mkdir','-p','files/engine/media');shell(*base,'cp','/data/local/tmp/wg-ui.png','files/engine/media/'+'1'*64);shell(*base,'cp','/data/local/tmp/wg-ui.png','files/engine/media/'+'3'*64)
