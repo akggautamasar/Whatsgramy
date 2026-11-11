@@ -12,16 +12,15 @@ export function createApp({store,archive,wa,tg,token,login}){
  }
  app.get('/api/settings',(_,res)=>res.json(store.settings()));app.put('/api/settings',(req,res)=>{try{res.json(store.updateSettings(req.body));}catch(e){res.status(400).json({error:e.message});}});
  app.post('/api/whatsapp/start',async(_,res)=>{await wa.start();res.json({ok:true});});
+ app.post('/api/whatsapp/qr',async(_,res)=>{await wa.startQr();res.json({ok:true});});
  app.post('/api/whatsapp/pair',async(req,res)=>res.json({code:await wa.pair(String(req.body.phone||''))}));
  app.get('/api/history',(req,res)=>res.json({items:store.history(Number(req.query.before)||Number.MAX_SAFE_INTEGER,Math.max(1,Math.min(200,Number(req.query.limit)||100)),String(req.query.beforeId||''))}));
- app.get('/api/chats',(_,res)=>res.json({items:store.chats()}));
+ app.get('/api/chats',(req,res)=>res.json({items:store.chats(req.query.selected==='1')}));
  app.get('/api/messages',(req,res)=>res.json({items:store.messages(String(req.query.chat||''),Number(req.query.before)||Number.MAX_SAFE_INTEGER,String(req.query.beforeId||'')).map(m=>archive.describe?.(m)??m)}));
  app.get('/api/media',(req,res)=>{const cursor=Math.max(0,Number(req.query.cursor)||0),limit=Math.max(1,Math.min(200,Number(req.query.limit)||100));res.json({items:store.listMedia(cursor,limit,String(req.query.q||''),String(req.query.filter||'')).map(m=>archive.describe?.(m)??m)});});
  if (archive.folderOnly) {
   app.get('/api/backup/chats', (_, res) => {
-   res.json({items:store.db.prepare(
-    'SELECT id,title,EXISTS(SELECT 1 FROM selected_chats WHERE id=chats.id) AS backup_selected FROM chats ORDER BY title COLLATE NOCASE'
-   ).all()});
+   res.json({items:store.backupChats()});
   });
   app.put('/api/backup/chats', (req, res) => {
    const {changes} = req.body ?? {};

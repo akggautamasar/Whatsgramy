@@ -111,10 +111,10 @@ jobs:
       - name: Publish verified preview
         run: |
           set -euo pipefail
-          mv apk/app-debug.apk Whatsgramy-0.5.0-preview.apk
-          sha256sum Whatsgramy-0.5.0-preview.apk > SHA256SUMS.txt
+          mv apk/app-debug.apk Whatsgramy-0.5.1-preview.apk
+          sha256sum Whatsgramy-0.5.1-preview.apk > SHA256SUMS.txt
           cat > notes.md <<'NOTES'
-          Whatsgramy local WhatsApp folder backup and opt-in chat selection.
+          Whatsgramy pairing recovery, selected chats and contact names.
 
           Links WhatsApp and Telegram directly inside the APK. No hosted backend is required.
           Open Settings, connect Telegram using your API ID/hash, then pair WhatsApp using Linked devices.
@@ -123,4 +123,4 @@ jobs:
           CI checks engine startup, actual Android SQLite support, API health and installation on an Android emulator. Live account pairing still needs validation with your accounts.
           Debug-signed preview; signing keys can differ between builds. Stable production signing is not configured.
           NOTES
-          gh release create "preview-$GITHUB_RUN_NUMBER" Whatsgramy-0.5.0-preview.apk SHA256SUMS.txt --target "$GITHUB_SHA" --title "Whatsgramy 0.5.0 preview (build $GITHUB_RUN_NUMBER)" --notes-file notes.md --prerelease
+          gh release create "preview-$GITHUB_RUN_NUMBER" Whatsgramy-0.5.1-preview.apk SHA256SUMS.txt --target "$GITHUB_SHA" --title "Whatsgramy 0.5.1 preview (build $GITHUB_RUN_NUMBER)" --notes-file notes.md --prerelease

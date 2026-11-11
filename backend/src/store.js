@@ -20,6 +20,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, media_id TEXT, type TEXT NOT NULL, timestamp INTEGER NOT NULL, bytes INTEGER NOT NULL DEFAULT 0, detail TEXT);`);
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS selected_chats (id TEXT PRIMARY KEY);
+      CREATE TABLE IF NOT EXISTS chat_identity (id TEXT PRIMARY KEY, phone TEXT, name TEXT);
       CREATE INDEX IF NOT EXISTS media_by_chat ON media(chat_id);
       CREATE INDEX IF NOT EXISTS media_by_chat_status ON media(chat_id,status);
       CREATE INDEX IF NOT EXISTS chats_by_updated ON chats(updated DESC);
@@ -89,6 +90,19 @@ export class Store {
     if('path' in fields&&fields.path===null&&old.path)this.event(id,'local_removed',old.size);
     if('pinned' in fields&&old.pinned!==fields.pinned)this.event(id,fields.pinned?'pinned':'unpinned');
   }
+  chatIdentity(id, phoneJid, name) {
+    if (typeof id !== 'string' || !id || id.length > 200) return;
+    const phone = /^([1-9]\d{7,14})(?::\d+)?@s\.whatsapp\.net$/.exec(phoneJid ?? id)?.[1] ?? null;
+    const display = typeof name === 'string' ? name.trim().slice(0,200) || null : null;
+    if (!phone && !display) return;
+    this.db.prepare(`INSERT INTO chat_identity VALUES(?,?,?)
+      ON CONFLICT(id) DO UPDATE SET phone=COALESCE(excluded.phone,phone),name=COALESCE(excluded.name,name)`).run(id,phone,display);
+  }
+  backupChats() {
+    return this.db.prepare(`SELECT c.id,c.title,i.phone,i.name AS whatsapp_name,
+      EXISTS(SELECT 1 FROM selected_chats WHERE id=c.id) AS backup_selected
+      FROM chats c LEFT JOIN chat_identity i ON i.id=c.id ORDER BY c.title COLLATE NOCASE`).all();
+  }
   chatSelected(id) {
     return !!this.db.prepare('SELECT 1 FROM selected_chats WHERE id=?').get(id);
   }
@@ -134,7 +148,7 @@ export class Store {
       FROM media WHERE rowid > ? AND name LIKE ? ${condition} ORDER BY rowid LIMIT ?
     `).all(cursor, `%${query}%`, limit).map(media => this.describeMedia(media));
   }
-  chats(){return this.db.prepare(`SELECT c.*, EXISTS(SELECT 1 FROM selected_chats WHERE id=c.id) AS backup_selected, (SELECT text FROM messages WHERE chat_id=c.id ORDER BY timestamp DESC LIMIT 1) AS preview,(SELECT COUNT(*) FROM media WHERE chat_id=c.id) AS files,(SELECT COUNT(*) FROM media WHERE chat_id=c.id AND status='verified') AS saved_files,(SELECT name FROM media WHERE chat_id=c.id ORDER BY rowid DESC LIMIT 1) AS last_file FROM chats c ORDER BY updated DESC LIMIT 500`).all();}
+  chats(selectedOnly=false){return this.db.prepare(`SELECT c.*,i.phone,i.name AS whatsapp_name, EXISTS(SELECT 1 FROM selected_chats WHERE id=c.id) AS backup_selected, (SELECT text FROM messages WHERE chat_id=c.id ORDER BY timestamp DESC LIMIT 1) AS preview,(SELECT COUNT(*) FROM media WHERE chat_id=c.id) AS files,(SELECT COUNT(*) FROM media WHERE chat_id=c.id AND status='verified') AS saved_files,(SELECT name FROM media WHERE chat_id=c.id ORDER BY rowid DESC LIMIT 1) AS last_file FROM chats c LEFT JOIN chat_identity i ON i.id=c.id ${selectedOnly ? "WHERE c.id IN (SELECT id FROM selected_chats)" : ""} ORDER BY updated DESC LIMIT 500`).all();}
   messages(chat,before=Number.MAX_SAFE_INTEGER,beforeId=''){return this.db.prepare('SELECT m.*,a.name,a.mime,a.kind,a.size,a.status,a.sha256,a.verified_at,a.created_at,a.uploaded_at,a.telegram_id,a.telegram_peer,a.path,a.pinned,a.error,a.downloaded_at FROM messages m LEFT JOIN media a ON a.id=m.media_id WHERE m.chat_id=? AND (m.timestamp<? OR (m.timestamp=? AND m.id<?)) ORDER BY m.timestamp DESC,m.id DESC LIMIT 100').all(chat,before,before,beforeId).map(m=>this.describeMedia(m));}
   history(before=Number.MAX_SAFE_INTEGER,limit=100,beforeId=''){return this.db.prepare('SELECT e.*,m.name,m.chat_id FROM events e LEFT JOIN media m ON m.id=e.media_id WHERE (timestamp<? OR (timestamp=? AND e.id<?)) ORDER BY timestamp DESC,e.id DESC LIMIT ?').all(before,before,beforeId,limit);}
   stats(){

@@ -189,3 +189,41 @@ test('folder backup accepts only exact files from opted-in chats and scopes its 
  const file = await request('media/'+f.id+'/file');
  assert.deepEqual(Buffer.from(await file.arrayBuffer()),f.bytes);
 });
+
+test('phone pairing clears revoked session files and waits until WhatsApp is ready', async t => {
+ const f = await fixture(t);
+ const {mkdir} = await import('node:fs/promises');
+ const dir = join(f.dir,'whatsapp-session');
+ await mkdir(dir);
+ await writeFile(join(dir,'creds.json'),'revoked');
+ const wa = new WhatsAppConnection({dir:f.dir,store:f.store});
+ wa.connection='logged_out';
+ let requests=0;
+ wa.start=async()=>{
+  await assert.rejects(stat(join(dir,'creds.json')), /ENOENT/);
+  wa.connection='connecting';
+  wa.socket={authState:{creds:{registered:false}}, requestPairingCode:async phone=>{
+   assert.equal(wa.readyToPair,true);
+   assert.equal(phone,'919876543210');
+   requests++;
+   return 'MOCKCODE';
+  }};
+  setTimeout(()=>{wa.readyToPair=true;},30);
+ };
+ assert.equal(await wa.pair('919876543210'),'MOCKCODE');
+ assert.equal(requests,1);
+ assert.equal(f.store.get(f.id).status,'queued');
+});
+
+test('selected chats keep their original IDs while exposing the linked WhatsApp phone and name', async t => {
+ const f = await fixture(t);
+ const lid='123456789012345@lid';
+ f.store.chat(lid,lid);
+ f.store.chatIdentity(lid,'919876543210@s.whatsapp.net','Saved contact');
+ f.store.selectChat(lid,true);
+ assert.deepEqual(f.store.chats(true).map(({id,phone,whatsapp_name})=>({id,phone,whatsapp_name})),[
+  {id:lid,phone:'919876543210',whatsapp_name:'Saved contact'}
+ ]);
+ assert.equal(f.store.backupChats().find(chat=>chat.id===lid).backup_selected,1);
+ assert.equal('phone' in f.store.snapshot({selectedOnly:true}).chats[0],false);
+});

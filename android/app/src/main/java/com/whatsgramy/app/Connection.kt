@@ -56,6 +56,7 @@ class Api(context: Context) {
     private val metadataClient = client.newBuilder()
         .readTimeout(12, TimeUnit.SECONDS).connectTimeout(3, TimeUnit.SECONDS).build()
     private val checkpointClient = metadataClient.newBuilder().readTimeout(180, TimeUnit.SECONDS).build()
+    private val pairingClient = metadataClient.newBuilder().readTimeout(35, TimeUnit.SECONDS).build()
     fun request(path: String, query: Map<String,String> = emptyMap()): Request.Builder {
         require(cfg.url.isNotBlank()) { "Connect your private backend in Settings first" }
         val url=(cfg.url+path).toHttpUrl().newBuilder().apply { query.forEach { (k,v)->addQueryParameter(k,v) } }.build()
@@ -64,7 +65,7 @@ class Api(context: Context) {
     fun json(path: String, method: String="GET", body: JSONObject?=null, query: Map<String,String> = emptyMap()): JSONObject {
         val builder=request(path,query)
         if(method!="GET")builder.method(method,(body?:JSONObject()).toString().toRequestBody("application/json".toMediaType()))
-        return (if (path == "/api/index/backup") checkpointClient else metadataClient).newCall(builder.build()).execute().use { response->
+        return (when (path) { "/api/index/backup" -> checkpointClient; "/api/whatsapp/pair" -> pairingClient; else -> metadataClient }).newCall(builder.build()).execute().use { response->
             val text=response.body?.string()?:"{}"
             if(!response.isSuccessful)throw IllegalStateException(runCatching { JSONObject(text).optString("error","Request failed (${response.code})") }.getOrDefault("Request failed (${response.code})"))
             JSONObject(text)

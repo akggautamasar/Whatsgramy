@@ -45,6 +45,88 @@ class MainActivity:ComponentActivity(){
     private val green=Color.rgb(0,128,105)
     private val ink=Color.rgb(17,27,33)
     private val muted=Color.rgb(102,119,129)
+    private var phoneContacts: Map<String, String> = emptyMap()
+    private val contactsPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) {
+            lifecycleScope.launch {
+                loadPhoneContacts()
+                refreshPage?.invoke()
+            }
+        }
+    }
+
+    private fun canReadContacts() = checkSelfPermission(android.Manifest.permission.READ_CONTACTS) ==
+        android.content.pm.PackageManager.PERMISSION_GRANTED
+
+    private suspend fun loadPhoneContacts() {
+        phoneContacts = withContext(Dispatchers.IO) {
+            if (!canReadContacts()) return@withContext emptyMap()
+            val country = getSystemService(android.telephony.TelephonyManager::class.java)
+                ?.simCountryIso.orEmpty().ifBlank { Locale.getDefault().country }.uppercase(Locale.ROOT)
+            runCatching {
+                val names = mutableMapOf<String, String>()
+                contentResolver.query(
+                    android.provider.ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                    arrayOf("display_name", "data1", "data4"), null, null, null
+                )?.use { cursor ->
+                    while (cursor.moveToNext()) {
+                        val name = cursor.getString(0).orEmpty().trim()
+                        val number = cursor.getString(1).orEmpty()
+                        if (name.isBlank()) continue
+                        val normalized = cursor.getString(2)
+                            ?: android.telephony.PhoneNumberUtils.formatNumberToE164(number, country)
+                        for (value in listOfNotNull(number, normalized)) {
+                            val digits = value.filter { it in '0'..'9' }
+                            if (digits.length in 8..15) names.putIfAbsent(digits, name)
+                        }
+                    }
+                }
+                names
+            }.getOrDefault(emptyMap())
+        }
+    }
+
+    private fun chatName(chat: JSONObject): String {
+        val id = chat.optString("id")
+        val direct = Regex("^([0-9]{8,15})(?::[0-9]+)?@s\\.whatsapp\\.net$").matchEntire(id)
+        val number = str(chat, "phone", direct?.groupValues?.get(1).orEmpty())
+        if (canReadContacts()) phoneContacts[number]?.let { return it }
+        val title = str(chat, "title")
+        if (title.isNotBlank() && '@' !in title) return title
+        val whatsapp = str(chat, "whatsapp_name")
+        if (whatsapp.isNotBlank()) return whatsapp
+        return when {
+            number.isNotBlank() -> "+$number"
+            id.endsWith("@g.us") -> "WhatsApp group"
+            else -> "WhatsApp contact"
+        }
+    }
+
+    private fun showWhatsAppQr() = runWork {
+        request("/api/whatsapp/qr", "POST")
+        repeat(24) {
+            val wa = request("/api/status").getJSONObject("whatsapp")
+            if (wa.optString("connection") == "open") {
+                showSettings()
+                return@runWork
+            }
+            val qr = wa.optString("qr")
+            if (qr.startsWith("data:image")) {
+                val bytes = Base64.decode(qr.substringAfter(','), Base64.DEFAULT)
+                val image = ImageView(this).apply {
+                    setImageBitmap(BitmapFactory.decodeByteArray(bytes, 0, bytes.size))
+                    adjustViewBounds = true
+                }
+                AlertDialog.Builder(this).setTitle("Scan this WhatsApp QR code")
+                    .setMessage("Show this screen on another device, then scan it using WhatsApp → Linked devices.")
+                    .setView(image).setPositiveButton("Done") { _, _ -> showSettings() }.show()
+                return@runWork
+            }
+            delay(1000)
+        }
+        error("WhatsApp did not provide a QR code. Try again after it reconnects.")
+    }
+
     private val pickWhatsAppFolder = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) runWork {
             val folder = WhatsAppFolder(this)
@@ -64,7 +146,7 @@ class MainActivity:ComponentActivity(){
             AlertDialog.Builder(this).setMessage("Link WhatsApp and wait for your chat list to appear.").setPositiveButton("OK", null).show()
             return@runWork
         }
-        val labels = chats.map { str(it, "title", it.getString("id")) }.toTypedArray()
+        val labels = chats.map { chatName(it) }.toTypedArray()
         val original = BooleanArray(chats.size) { chats[it].optInt("backup_selected") == 1 }
         val selected = original.clone()
         AlertDialog.Builder(this)
@@ -94,6 +176,7 @@ class MainActivity:ComponentActivity(){
         if(getSharedPreferences("engine-controls",MODE_PRIVATE).getBoolean("enabled",true))runCatching{EngineService.start(this)}
         if(android.os.Build.VERSION.SDK_INT>=33&&checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)!=android.content.pm.PackageManager.PERMISSION_GRANTED)requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS),32)
         ArchiveSync.schedule(this);showChats()
+        if (canReadContacts()) lifecycleScope.launch { loadPhoneContacts(); if (activeTab == "Chats") refreshPage?.invoke() }
     }
     override fun onDestroy(){pollJob?.cancel();currentMedia?.stop();super.onDestroy()}
     private fun dp(n:Int)=(n*resources.displayMetrics.density).toInt()
@@ -151,10 +234,10 @@ class MainActivity:ComponentActivity(){
     private fun empty(parent:LinearLayout,heading:String,detail:String,action:(()->Unit)?=null){val c=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;gravity=Gravity.CENTER;setPadding(dp(30),dp(36),dp(30),dp(36))};c.addView(ArchiveIcon(this,"Files",green),LinearLayout.LayoutParams(dp(42),dp(42)));c.addView(text(heading,18f,true).apply{gravity=Gravity.CENTER});c.addView(text(detail,14f).apply{gravity=Gravity.CENTER;setTextColor(muted)});if(action!=null)c.addView(button("Open Settings",action));parent.addView(c)}
     private fun statusSummary(parent:LinearLayout,j:JSONObject){val stats=j.optJSONObject("stats")?:JSONObject();lastStatus=j;val s=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setPadding(dp(14),dp(10),dp(14),dp(10));background=rounded(Color.rgb(238,248,242),14)};parent.addView(s,LinearLayout.LayoutParams(-1,-2).apply{setMargins(dp(16),dp(4),dp(16),dp(8))})
         val phoneCount=stats.optInt("local_files")+MediaCache(this).use{cache->cache.availableIds().count{id->!File(filesDir,"engine/media/$id").isFile}};s.addView(text("${stats.optInt("verified")} saved to Telegram   ·   $phoneCount on this phone",13f,true));val wa=j.optJSONObject("whatsapp")?.optString("connection");val tg=j.optJSONObject("telegram")?.optBoolean("connected")==true;val transfer=j.optJSONArray("transfers")?.rows()?.firstOrNull{it.optString("phase") in listOf("downloading","uploading","verifying")};val label=if(transfer!=null)"${str(transfer,"phase").replaceFirstChar{it.uppercase()}}: ${str(transfer,"name","Attachment")} ${if(transfer.isNull("percent"))""else"${transfer.optInt("percent")}%"}" else "${stats.optInt("pending")} waiting · ${stats.optInt("failed")+stats.optInt("needs_source")} need attention · ${if(tg)"Telegram connected"else"Telegram offline"}";s.addView(text(label,12f).apply{setTextColor(muted)});if(wa!="open")s.addView(text("WhatsApp: ${wa?:"connecting"} · tap to manage connections",12f).apply{setTextColor(green)});s.setOnClickListener{if(wa!="open"||!tg)showSettings()else showHistory()}}
-    private fun showChats(query:String="",filter:String="All"){activeTab="Chats";page("Whatsgramy");searchBox("Search chats",query){showChats(it,filter)};chips(listOf("All","With files","Needs backup"),filter){showChats(query,it)};val line=connectionLine();statusPanel=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;body.addView(this)};val panel=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL};body.addView(panel)
-        live("/api/chats",emptyMap(),line){data->val y=scroll.scrollY;panel.removeAllViews();val rows=jsonItems(data).rows().filter{str(it,"title").contains(query,true)&&when(filter){"With files"->it.optInt("files")>0;"Needs backup"->it.optInt("files")>it.optInt("saved_files");else->true}}
-            if(rows.isEmpty())empty(panel,"No chats to show",if(query.isNotBlank())"Try another name."else"Connect WhatsApp in Settings. Chats appear as your linked device syncs."){showSettings()}
-            rows.forEach{c->val name=str(c,"title",str(c,"id"));val row=LinearLayout(this).apply{gravity=Gravity.CENTER_VERTICAL;setPadding(dp(16),dp(12),dp(16),dp(12));minimumHeight=dp(82);setOnClickListener{showChat(c.getString("id"),name)}};row.addView(avatar(name),LinearLayout.LayoutParams(dp(52),dp(52)).apply{rightMargin=dp(14)});val copy=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL};val top=LinearLayout(this);top.addView(text(name,17f,true).apply{maxLines=1;ellipsize=android.text.TextUtils.TruncateAt.END},LinearLayout.LayoutParams(0,-2,1f));top.addView(text(time(c.optLong("updated")),11f).apply{setTextColor(muted)});copy.addView(top);copy.addView(text(str(c,"preview",str(c,"last_file","No messages yet")),14f).apply{setTextColor(muted);maxLines=1;ellipsize=android.text.TextUtils.TruncateAt.END});if(c.optInt("files")>0)copy.addView(text("${c.optInt("saved_files")} / ${c.optInt("files")} files saved to Telegram",11f).apply{setTextColor(green)});if(c.optInt("backup_selected")==1)copy.addView(text("Selected for backup",11f).apply{setTextColor(green)});row.addView(copy,LinearLayout.LayoutParams(0,-2,1f));panel.addView(row);panel.addView(View(this).apply{setBackgroundColor(Color.rgb(241,243,244))},LinearLayout.LayoutParams(-1,dp(1)).apply{leftMargin=dp(82)})};scroll.post{scroll.scrollTo(0,y)}
+    private fun showChats(query:String="",filter:String="All"){activeTab="Chats";page("Whatsgramy");refreshPage={showChats(query,filter)};searchBox("Search chats",query){showChats(it,filter)};chips(listOf("All","Selected","With files","Needs backup"),filter){showChats(query,it)};if(!canReadContacts())body.addView(button("Use phone contact names"){contactsPermission.launch(android.Manifest.permission.READ_CONTACTS)});val line=connectionLine();statusPanel=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;body.addView(this)};val panel=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL};body.addView(panel)
+        live("/api/chats",if(filter=="Selected")mapOf("selected" to "1")else emptyMap(),line){data->val y=scroll.scrollY;panel.removeAllViews();val rows=jsonItems(data).rows().filter{(chatName(it).contains(query,true)||str(it,"id").contains(query,true)||str(it,"phone").contains(query,true))&&when(filter){"Selected"->it.optInt("backup_selected")==1;"With files"->it.optInt("files")>0;"Needs backup"->it.optInt("files")>it.optInt("saved_files");else->true}}
+            if(rows.isEmpty())empty(panel,"No chats to show",if(query.isNotBlank())"Try another name."else if(filter=="Selected")"Choose chats to back up in Settings."else"Connect WhatsApp in Settings. Chats appear as your linked device syncs."){showSettings()}
+            rows.forEach{c->val name=chatName(c);val row=LinearLayout(this).apply{gravity=Gravity.CENTER_VERTICAL;setPadding(dp(16),dp(12),dp(16),dp(12));minimumHeight=dp(82);setOnClickListener{showChat(c.getString("id"),name)}};row.addView(avatar(name),LinearLayout.LayoutParams(dp(52),dp(52)).apply{rightMargin=dp(14)});val copy=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL};val top=LinearLayout(this);top.addView(text(name,17f,true).apply{maxLines=1;ellipsize=android.text.TextUtils.TruncateAt.END},LinearLayout.LayoutParams(0,-2,1f));top.addView(text(time(c.optLong("updated")),11f).apply{setTextColor(muted)});copy.addView(top);copy.addView(text(str(c,"preview",str(c,"last_file","No messages yet")),14f).apply{setTextColor(muted);maxLines=1;ellipsize=android.text.TextUtils.TruncateAt.END});if(c.optInt("files")>0)copy.addView(text("${c.optInt("saved_files")} / ${c.optInt("files")} files saved to Telegram",11f).apply{setTextColor(green)});if(c.optInt("backup_selected")==1)copy.addView(text("Selected for backup",11f).apply{setTextColor(green)});row.addView(copy,LinearLayout.LayoutParams(0,-2,1f));panel.addView(row);panel.addView(View(this).apply{setBackgroundColor(Color.rgb(241,243,244))},LinearLayout.LayoutParams(-1,dp(1)).apply{leftMargin=dp(82)})};scroll.post{scroll.scrollTo(0,y)}
         }
     }
     private fun showChat(id:String,name:String,before:Long=Long.MAX_VALUE,older:Boolean=false,beforeId:String=""){activeTab="Chats";page(name,"WhatsApp conversation · attachment archive",{showChats()});refreshPage={showChat(id,name,before,older,beforeId)};body.background=ChatWallpaper();val line=connectionLine();val panel=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setPadding(dp(8),0,dp(8),dp(10))};body.addView(panel);var initial=true
@@ -334,6 +417,7 @@ class MainActivity:ComponentActivity(){
             if (g != generation) return@runWork
             engineState.text = "Backup service connected"
             val accounts=card();accounts.addView(text("Connected accounts",18f,true));val wa=status.getJSONObject("whatsapp");accounts.addView(text("WhatsApp: ${wa.optString("connection")}\nTelegram: ${if(status.getJSONObject("telegram").optBoolean("connected"))"connected"else"not connected"}"));if(!status.getJSONObject("telegram").optBoolean("connected"))telegramLogin(accounts)
+            accounts.addView(button("Show WhatsApp QR code"){showWhatsAppQr()})
             accounts.addView(button("Refresh WhatsApp connection"){runWork{request("/api/whatsapp/start","POST");showSettings()}})
             val number=EditText(this).apply{hint="WhatsApp number with country code, digits only";inputType=InputType.TYPE_CLASS_PHONE};accounts.addView(number);accounts.addView(button("Get pairing code"){runWork{val response=request("/api/whatsapp/pair","POST",JSONObject().put("phone",number.text.toString().filter{it.isDigit()}));AlertDialog.Builder(this@MainActivity).setTitle("Link Whatsgramy").setMessage("In WhatsApp → Linked devices → Link a device → Link with phone number, enter:\n\n${response.getString("code")}").setPositiveButton("OK",null).show()}})
             val qr=wa.optString("qr");if(qr.startsWith("data:image")){val bytes=Base64.decode(qr.substringAfter(','),Base64.DEFAULT);accounts.addView(ImageView(this@MainActivity).apply{setImageBitmap(BitmapFactory.decodeByteArray(bytes,0,bytes.size));adjustViewBounds=true},LinearLayout.LayoutParams(-1,dp(260)));accounts.addView(text("Scan from WhatsApp → Linked devices using another screen, or use the pairing code above.",12f))}
