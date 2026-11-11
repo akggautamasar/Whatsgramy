@@ -11,7 +11,7 @@ import { encodeSnapshot } from './metadata.js';
 const exists=async p=>!!p&&await stat(p).then(s=>s.isFile()).catch(()=>false);
 export class Archive {
  constructor({store,telegram,download,dir,indexKey,indexMode='encrypted',maxBytes=2_000_000_000}){Object.assign(this,{store,telegram,download,dir,indexKey,indexMode,maxBytes});this.locks=new Map();this.running=false;this.manifestLock=null;this.transfers=new Map();}
- progress(id,phase,done=0,total=0){this.transfers.set(id,{phase,bytes:done,total,percent:total>0?Math.min(100,Math.round(done/total*100)):null,updated_at:Date.now()});}
+ progress(id,phase,done=0,total=0){this.transfers.set(id,{phase,bytes:done,total,percent:total>0&&phase!=='verifying'?Math.min(100,Math.round(done/total*100)):null,updated_at:Date.now()});}
  describe(m){if(!m)return m;return {...m,transfer:this.transfers.get(m.media_id||m.id)??null};}
  activity(){return [...this.transfers.entries()].filter(([,v])=>Date.now()-v.updated_at<120000).map(([id,v])=>({id,name:this.store.get(id)?.name,...v}));}
  async lock(id,fn){while(this.locks.has(id))await this.locks.get(id).catch(()=>{});const p=fn();this.locks.set(id,p);try{return await p;}finally{if(this.locks.get(id)===p)this.locks.delete(id);}}

@@ -9,7 +9,8 @@ class ArchiveIcon(context:Context,private val kind:String,private val tint:Int):
  "Back"->{line(19f,12f,5f,12f);line(5f,12f,11f,6f);line(5f,12f,11f,18f)}
  "Refresh"->{c.drawArc(4f,4f,20f,20f,40f,285f,false,p);line(20f,4f,20f,10f);line(20f,10f,14f,10f)}
  "Chats"->{c.drawRoundRect(3f,3f,21f,18f,5f,5f,p);val path=Path().apply{moveTo(7f,18f);lineTo(4f,21f);lineTo(4f,15f)};c.drawPath(path,p);line(7f,8f,17f,8f);line(7f,12f,14f,12f)}
- "Transfers","Download"->{line(8f,3f,8f,17f);line(4f,13f,8f,17f);line(8f,17f,12f,13f);line(16f,21f,16f,7f);line(12f,11f,16f,7f);line(16f,7f,20f,11f)}
+ "Download"->{line(12f,3f,12f,15f);line(7f,10f,12f,15f);line(12f,15f,17f,10f);line(5f,18f,5f,21f);line(5f,21f,19f,21f);line(19f,21f,19f,18f)}
+ "Transfers"->{line(8f,3f,8f,17f);line(4f,13f,8f,17f);line(8f,17f,12f,13f);line(16f,21f,16f,7f);line(12f,11f,16f,7f);line(16f,7f,20f,11f)}
  "Open"->{c.drawCircle(12f,12f,9f,p);line(10f,7f,16f,12f);line(16f,12f,10f,17f)}
  "Settings"->{c.drawCircle(12f,12f,4f,p);c.drawCircle(12f,12f,8f,p);for(i in 0..7){val a=i*Math.PI/4;line((12+8*kotlin.math.cos(a)).toFloat(),(12+8*kotlin.math.sin(a)).toFloat(),(12+11*kotlin.math.cos(a)).toFloat(),(12+11*kotlin.math.sin(a)).toFloat())}}
  "Photo"->{c.drawRoundRect(3f,3f,21f,21f,3f,3f,p);c.drawCircle(16f,8f,2f,p);val path=Path().apply{moveTo(4f,18f);lineTo(9f,11f);lineTo(14f,17f);lineTo(17f,13f);lineTo(21f,18f)};c.drawPath(path,p)}

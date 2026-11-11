@@ -47,7 +47,7 @@ export class Store {
     this.db.prepare('INSERT INTO chats VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,updated=MAX(updated,excluded.updated)').run(id,title||id,now);this.changed();
   }
   message(m){
-    const old=this.db.prepare('SELECT text FROM messages WHERE id=?').get(m.id);if(old?.text===(m.text||''))return;
+    const old=this.db.prepare('SELECT text,from_me FROM messages WHERE id=?').get(m.id);if(old?.text===(m.text||'')&&old.from_me===(m.fromMe?1:0))return;
     this.db.prepare('INSERT INTO messages(id,chat_id,sender,text,timestamp,media_id,from_me) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET text=excluded.text,from_me=excluded.from_me').run(m.id,m.chatId,m.sender||'',m.text||'',m.timestamp,m.mediaId||null,m.fromMe?1:0);this.changed();
   }
   insertMedia(m){

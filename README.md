@@ -2,7 +2,7 @@
 
 A personal, read-only WhatsApp attachment archive with Telegram recovery. The Android APK runs the linked-device engine, database and Telegram client **on the phone**, without a hosted backend.
 
-## Phone setup (0.3.0)
+## Phone setup (0.4.0)
 
 1. Install the APK and open Settings. The foreground archive notification indicates that the phone engine is running.
 2. Enter your own Telegram API ID and hash from https://my.telegram.org and your phone number. Complete the Telegram code and optional two-step password prompts. Passwords and codes are not saved.
@@ -15,6 +15,14 @@ The engine uses a loopback-only authenticated interface inside the APK; you do n
 Android limits data-sync foreground services (including a six-hour daily budget on Android 15+). The engine stops when its budget expires; use Start / resume from Settings when allowed. WorkManager handles periodic phone-cache work while the engine is available. This is not a guarantee of uninterrupted capture: files must still be available from WhatsApp when the linked device receives them. Historical media, disappearing messages and view-once content cannot be promised; view-once and disappearing messages are excluded.
 
 **Validation:** archive lifecycle tests use a fake Telegram store. CI builds the embedded runtime and checks Android installation, Node/SQLite startup and loopback health without any hosted service. Real WhatsApp linking and Telegram authorization require your accounts and have not been validated by CI. This is an unofficial personal-use preview.
+
+## Chats, files and transfers
+
+Chats use a familiar messaging layout with avatars, message previews, timestamps, date separators and left/right bubbles. Photos that are already on the phone have previews. Whatsgramy keeps the conversations read-only.
+
+Each attachment shows two independent facts: **Saved to Telegram** means the upload passed verification; **Available on this phone** means a local copy exists. Active files show download or upload progress, and the **Transfers** tab lists the current file and earlier backup events. The **Files** tab can filter by phone availability, Telegram backup, progress or failure. Long-press a file for details, retry, pinning or safe local deletion.
+
+The local archive starts before Telegram reconnects. While the backup service is unavailable, chats and file lists keep their last loaded data and show a reconnect message.
 
 ## Archive behavior (shared engine)
 

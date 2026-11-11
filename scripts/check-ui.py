@@ -51,5 +51,5 @@ shell('am','start','-W','-n',PKG+'/.MainActivity');wait_text('Project team');scr
 tap('Project team');wait_text('Thanks, I can open');wait_text('Saved to Telegram');screen('whatsgramy-conversation.png')
 shell('input','keyevent','4');time.sleep(1);tap('Files');wait_text('Campus-photo.png');wait_text('Not on phone');wait_text('Available on this phone');screen('whatsgramy-files.png')
 tap('Transfers');wait_text('saved to Telegram');screen('whatsgramy-transfers.png')
-tap('Settings');wait_text('On this phone');screen('whatsgramy-settings.png')
+tap('Settings');wait_text('Automatic backup');screen('whatsgramy-settings.png')
 print('Populated chat, file-state and transfer UI checks passed (synthetic emulator data only).')
