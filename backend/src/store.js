@@ -19,13 +19,14 @@ export class Store {
       CREATE INDEX IF NOT EXISTS archive_queue ON media(status,retry_at);
       CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, media_id TEXT, type TEXT NOT NULL, timestamp INTEGER NOT NULL, bytes INTEGER NOT NULL DEFAULT 0, detail TEXT);`);
     this.db.exec(`
+      CREATE TABLE IF NOT EXISTS selected_chats (id TEXT PRIMARY KEY);
       CREATE INDEX IF NOT EXISTS media_by_chat ON media(chat_id);
       CREATE INDEX IF NOT EXISTS media_by_chat_status ON media(chat_id,status);
       CREATE INDEX IF NOT EXISTS chats_by_updated ON chats(updated DESC);
       CREATE INDEX IF NOT EXISTS events_by_time ON events(timestamp DESC,id DESC);
     `);
     const columns = new Set(this.db.prepare('PRAGMA table_info(media)').all().map(c=>c.name));
-    for (const [key,type] of Object.entries({created_at:'INTEGER',uploaded_at:'INTEGER',telegram_peer:'TEXT'})) if(!columns.has(key))this.db.exec(`ALTER TABLE media ADD COLUMN ${key} ${type}`);
+    for (const [key,type] of Object.entries({created_at:'INTEGER',uploaded_at:'INTEGER',telegram_peer:'TEXT',expected_sha:'TEXT'})) if(!columns.has(key))this.db.exec(`ALTER TABLE media ADD COLUMN ${key} ${type}`);
     if(!this.db.prepare('PRAGMA table_info(sync_state)').all().some(c=>c.name==='telegram_account_id'))this.db.exec('ALTER TABLE sync_state ADD COLUMN telegram_account_id TEXT');
     if(!this.db.prepare('PRAGMA table_info(sync_state)').all().some(c=>c.name==='backup_message_id'))this.db.exec('ALTER TABLE sync_state ADD COLUMN backup_message_id INTEGER');
     if(!this.db.prepare('PRAGMA table_info(messages)').all().some(c=>c.name==='from_me'))this.db.exec('ALTER TABLE messages ADD COLUMN from_me INTEGER NOT NULL DEFAULT 0');
@@ -63,13 +64,13 @@ export class Store {
     this.db.prepare('INSERT INTO chats VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,updated=MAX(updated,excluded.updated)').run(id,title||id,now);this.changed();
   }
   message(m){
-    const old=this.db.prepare('SELECT text,from_me FROM messages WHERE id=?').get(m.id);if(old?.text===(m.text||'')&&old.from_me===(m.fromMe?1:0))return;
-    this.db.prepare('INSERT INTO messages(id,chat_id,sender,text,timestamp,media_id,from_me) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET text=excluded.text,from_me=excluded.from_me').run(m.id,m.chatId,m.sender||'',m.text||'',m.timestamp,m.mediaId||null,m.fromMe?1:0);this.changed();
+    const old=this.db.prepare('SELECT text,from_me,media_id FROM messages WHERE id=?').get(m.id);if(old?.text===(m.text||'')&&old.from_me===(m.fromMe?1:0)&&(!m.mediaId||old.media_id===m.mediaId))return;
+    this.db.prepare('INSERT INTO messages(id,chat_id,sender,text,timestamp,media_id,from_me) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET text=excluded.text,from_me=excluded.from_me,media_id=COALESCE(excluded.media_id,messages.media_id)').run(m.id,m.chatId,m.sender||'',m.text||'',m.timestamp,m.mediaId||null,m.fromMe?1:0);this.changed();
   }
   insertMedia(m){
     const old=this.get(m.id);
-    if(old){if(old.status==='needs_source'&&m.raw)this.patch(m.id,{raw:m.raw,status:'queued',attempts:0,retry_at:0,error:null});return;}
-    this.db.prepare('INSERT INTO media(id,chat_id,message_id,name,mime,kind,size,raw,created_at) VALUES(?,?,?,?,?,?,?,?,?)').run(m.id,m.chatId,m.messageId,m.name,m.mime,m.kind,m.size||0,m.raw||null,m.createdAt??Date.now());
+    if(old){if(m.expectedSha&&!old.expected_sha)this.db.prepare('UPDATE media SET expected_sha=? WHERE id=?').run(m.expectedSha,m.id);if(old.status==='needs_source'&&m.raw)this.patch(m.id,{raw:m.raw,status:'queued',attempts:0,retry_at:0,error:null});return;}
+    this.db.prepare('INSERT INTO media(id,chat_id,message_id,name,mime,kind,size,raw,created_at,expected_sha) VALUES(?,?,?,?,?,?,?,?,?,?)').run(m.id,m.chatId,m.messageId,m.name,m.mime,m.kind,m.size||0,m.raw||null,m.createdAt??Date.now(),m.expectedSha??null);
     this.event(m.id,'discovered',m.size||0);this.changed();
   }
   event(id,type,bytes=0,detail=null,at=Date.now()){
@@ -88,12 +89,21 @@ export class Store {
     if('path' in fields&&fields.path===null&&old.path)this.event(id,'local_removed',old.size);
     if('pinned' in fields&&old.pinned!==fields.pinned)this.event(id,fields.pinned?'pinned':'unpinned');
   }
-  queue(now = Date.now(), kinds = KINDS, limit = 100, settings = DEFAULTS, excluded = []) {
+  chatSelected(id) {
+    return !!this.db.prepare('SELECT 1 FROM selected_chats WHERE id=?').get(id);
+  }
+  selectChat(id, selected) {
+    if (!this.db.prepare('SELECT 1 FROM chats WHERE id=?').get(id)) throw Error('Chat not found');
+    const sql = selected ? 'INSERT OR IGNORE INTO selected_chats VALUES (?)' : 'DELETE FROM selected_chats WHERE id=?';
+    if (this.db.prepare(sql).run(id).changes) this.changed();
+  }
+  queue(now = Date.now(), kinds = KINDS, limit = 100, settings = DEFAULTS, excluded = [], folderOnly = false) {
     if (!kinds.length) return [];
     return this.db.prepare(`
       SELECT media.* FROM media LEFT JOIN messages ON messages.id = media.id
       WHERE media.status IN ('queued','failed','downloaded','uploaded')
         AND retry_at <= ? AND attempts < 20
+        ${folderOnly ? 'AND media.chat_id IN (SELECT id FROM selected_chats) AND (media.path IS NOT NULL OR media.telegram_id IS NOT NULL)' : ''}
         AND kind IN (${kinds.map(() => '?').join(',')})
         AND (
           (? AND (media.telegram_id IS NOT NULL OR media.path IS NOT NULL))
@@ -124,7 +134,7 @@ export class Store {
       FROM media WHERE rowid > ? AND name LIKE ? ${condition} ORDER BY rowid LIMIT ?
     `).all(cursor, `%${query}%`, limit).map(media => this.describeMedia(media));
   }
-  chats(){return this.db.prepare(`SELECT c.*, (SELECT text FROM messages WHERE chat_id=c.id ORDER BY timestamp DESC LIMIT 1) AS preview,(SELECT COUNT(*) FROM media WHERE chat_id=c.id) AS files,(SELECT COUNT(*) FROM media WHERE chat_id=c.id AND status='verified') AS saved_files,(SELECT name FROM media WHERE chat_id=c.id ORDER BY rowid DESC LIMIT 1) AS last_file FROM chats c ORDER BY updated DESC LIMIT 500`).all();}
+  chats(){return this.db.prepare(`SELECT c.*, EXISTS(SELECT 1 FROM selected_chats WHERE id=c.id) AS backup_selected, (SELECT text FROM messages WHERE chat_id=c.id ORDER BY timestamp DESC LIMIT 1) AS preview,(SELECT COUNT(*) FROM media WHERE chat_id=c.id) AS files,(SELECT COUNT(*) FROM media WHERE chat_id=c.id AND status='verified') AS saved_files,(SELECT name FROM media WHERE chat_id=c.id ORDER BY rowid DESC LIMIT 1) AS last_file FROM chats c ORDER BY updated DESC LIMIT 500`).all();}
   messages(chat,before=Number.MAX_SAFE_INTEGER,beforeId=''){return this.db.prepare('SELECT m.*,a.name,a.mime,a.kind,a.size,a.status,a.sha256,a.verified_at,a.created_at,a.uploaded_at,a.telegram_id,a.telegram_peer,a.path,a.pinned,a.error,a.downloaded_at FROM messages m LEFT JOIN media a ON a.id=m.media_id WHERE m.chat_id=? AND (m.timestamp<? OR (m.timestamp=? AND m.id<?)) ORDER BY m.timestamp DESC,m.id DESC LIMIT 100').all(chat,before,before,beforeId).map(m=>this.describeMedia(m));}
   history(before=Number.MAX_SAFE_INTEGER,limit=100,beforeId=''){return this.db.prepare('SELECT e.*,m.name,m.chat_id FROM events e LEFT JOIN media m ON m.id=e.media_id WHERE (timestamp<? OR (timestamp=? AND e.id<?)) ORDER BY timestamp DESC,e.id DESC LIMIT ?').all(before,before,beforeId,limit);}
   stats(){
@@ -139,7 +149,20 @@ export class Store {
     const actualLocal=this.db.prepare('SELECT path,size FROM media WHERE path IS NOT NULL').all().filter(m=>existsSync(m.path));summary.local_files=actualLocal.length;summary.local_bytes=actualLocal.reduce((n,m)=>n+m.size,0);
     summary.unique_verified_files=this.db.prepare("SELECT COUNT(DISTINCT sha256) n FROM media WHERE status='verified'").get().n;return summary;
   }
-  snapshot(){return {marker:'WHATSGRAMY_MANIFEST_V2',version:2,createdAt:Date.now(),revision:this.syncState().revision,settings:this.settings(),summary:this.stats(),chats:this.db.prepare('SELECT * FROM chats').all(),messages:this.db.prepare('SELECT * FROM messages').all(),events:this.db.prepare('SELECT * FROM events ORDER BY timestamp,id').all(),media:this.db.prepare('SELECT id,chat_id,message_id,name,mime,kind,size,status,sha256,telegram_id,telegram_peer,created_at,uploaded_at,verified_at,downloaded_at,pinned,attempts,error FROM media').all()};}
+  snapshot({selectedOnly = false} = {}) {
+    const scope = selectedOnly ? 'WHERE chat_id IN (SELECT id FROM selected_chats)' : '';
+    const media = this.db.prepare(`SELECT id,chat_id,message_id,name,mime,kind,size,status,sha256,telegram_id,telegram_peer,created_at,uploaded_at,verified_at,downloaded_at,pinned,attempts,error FROM media ${scope}`).all();
+    const snapshot = {
+      marker:'WHATSGRAMY_MANIFEST_V2', version:2, createdAt:Date.now(),
+      revision:this.syncState().revision, settings:this.settings(),
+      chats:this.db.prepare(`SELECT * FROM chats ${selectedOnly ? 'WHERE id IN (SELECT id FROM selected_chats)' : ''}`).all(),
+      messages:this.db.prepare(`SELECT * FROM messages ${scope}`).all(),
+      events:this.db.prepare(`SELECT * FROM events ${selectedOnly ? 'WHERE media_id IN (SELECT id FROM media WHERE chat_id IN (SELECT id FROM selected_chats))' : ''} ORDER BY timestamp,id`).all(),
+      media,
+    };
+    if (!selectedOnly) snapshot.summary = this.stats();
+    return snapshot;
+  }
   restore(snapshot,{restoreSettings=this.stats().total===0}={}){
     validateSnapshot(snapshot);this.restoring=true;this.db.exec('BEGIN IMMEDIATE');
     try{

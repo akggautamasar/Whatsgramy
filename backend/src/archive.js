@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { mkdir, stat, unlink, rename, writeFile, readFile } from 'node:fs/promises';
+import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { createWriteStream } from 'node:fs';
 import { join } from 'node:path';
@@ -10,7 +11,7 @@ export { seal,unseal } from './metadata.js';
 import { encodeSnapshot } from './metadata.js';
 const exists=async p=>!!p&&await stat(p).then(s=>s.isFile()).catch(()=>false);
 export class Archive {
- constructor({store,telegram,download,dir,indexKey,indexMode='encrypted',maxBytes=2_000_000_000, batchSize=100, idleTimeoutMs=60000, backgroundCheckpoints=false}){Object.assign(this,{store,telegram,download,dir,indexKey,indexMode,maxBytes,batchSize,idleTimeoutMs,backgroundCheckpoints});this.locks=new Map();this.running=false;this.manifestLock=null;this.transfers=new Map();}
+ constructor({store,telegram,download,dir,indexKey,indexMode='encrypted',maxBytes=2_000_000_000, batchSize=100, idleTimeoutMs=60000, backgroundCheckpoints=false, folderOnly=false}){Object.assign(this,{store,telegram,download,dir,indexKey,indexMode,maxBytes,batchSize,idleTimeoutMs,backgroundCheckpoints,folderOnly});this.locks=new Map();this.running=false;this.manifestLock=null;this.transfers=new Map();}
  progress(id,phase,done=0,total=0){this.transfers.set(id,{phase,bytes:done,total,percent:total>0&&phase!=='verifying'?Math.min(100,Math.round(done/total*100)):null,updated_at:Date.now()});}
  async transfer(id, phase, total, operation, temporaryPath) {
   const controller = new AbortController();
@@ -63,7 +64,7 @@ export class Archive {
     const settings = this.store.settings();
     if (!settings.enabled) break;
     const kinds = ["photos","videos","audio","documents","other"].filter(kind => settings[kind]);
-    const [media] = this.store.queue(Date.now(), kinds, 1, settings, attempted);
+    const [media] = this.store.queue(Date.now(), kinds, 1, settings, attempted, this.folderOnly);
     if (!media) break;
     attempted.push(media.id);
     try {
@@ -83,18 +84,52 @@ export class Archive {
    this.running = false;
   }
  }
- async process(id){let m=this.store.get(id),cfg=this.store.settings();if(!cfg.enabled||!cfg[m.kind])return;
+ async process(id){let m=this.store.get(id),cfg=this.store.settings();if(!cfg.enabled||!cfg[m.kind]||(this.folderOnly&&!this.store.chatSelected(m.chat_id)))return;
   if(!await exists(m.path)){
    if (m.path) {
     this.store.patch(id, {path:null});
     m = this.store.get(id);
    }
    if(m.telegram_id){await this.retrieve(m);m=this.store.get(id);}
-   else {if(!cfg.autoDownload)return;if(!m.raw)throw Error('Original media is unavailable; no backup exists');if(m.size>this.maxBytes)throw Error('Attachment exceeds configured Telegram upload limit');const target=join(this.dir,id),part=target+'.'+randomUUID()+'.part';this.store.patch(id,{status:'downloading'});try{await this.transfer(id,'downloading',m.size,(progress,signal)=>this.download(m,part,this.maxBytes,progress,signal),part);const s=await stat(part);if(!s.size||s.size>this.maxBytes||(m.size>0&&s.size!==m.size))throw Error('Incomplete or oversized WhatsApp download');const hash=await hashFile(part);await rename(part,target);this.store.patch(id,{path:target,size:s.size,sha256:hash,downloaded_at:Date.now(),status:'downloaded'});}finally{await unlink(part).catch(()=>{});}m=this.store.get(id);}
+   else {if(this.folderOnly||!cfg.autoDownload)return;if(!m.raw)throw Error('Original media is unavailable; no backup exists');if(m.size>this.maxBytes)throw Error('Attachment exceeds configured Telegram upload limit');const target=join(this.dir,id),part=target+'.'+randomUUID()+'.part';this.store.patch(id,{status:'downloading'});try{await this.transfer(id,'downloading',m.size,(progress,signal)=>this.download(m,part,this.maxBytes,progress,signal),part);const s=await stat(part);if(!s.size||s.size>this.maxBytes||(m.size>0&&s.size!==m.size))throw Error('Incomplete or oversized WhatsApp download');const hash=await hashFile(part);await rename(part,target);this.store.patch(id,{path:target,size:s.size,sha256:hash,downloaded_at:Date.now(),status:'downloaded'});}finally{await unlink(part).catch(()=>{});}m=this.store.get(id);}
   }
-  cfg=this.store.settings();if(!cfg.enabled||!cfg.autoUpload||!cfg[m.kind])return;
+  cfg=this.store.settings();if(!cfg.enabled||!cfg.autoUpload||!cfg[m.kind]||(this.folderOnly&&!this.store.chatSelected(m.chat_id)))return;
   if(!m.telegram_id){this.store.patch(id,{status:'uploading'});const duplicate=this.store.byHash(m.sha256);if(duplicate&&duplicate.id!==id){this.store.patch(id,{telegram_id:duplicate.telegram_id,telegram_peer:duplicate.telegram_peer,uploaded_at:duplicate.uploaded_at,status:'uploaded'});this.store.event(id,'reused_existing_upload',m.size);}else{const remote=await this.transfer(id,'uploading',m.size,(progress,signal)=>this.telegram.upload(m.path,m,progress,signal));this.store.patch(id,{telegram_id:remote.id??remote,telegram_peer:remote.peer??null,uploaded_at:Date.now(),status:'uploaded'});}m=this.store.get(id);}
   this.store.patch(id,{status:'verifying'});const verify=join(this.dir,id+'.'+randomUUID()+'.verify');try{await this.transfer(id,'verifying',m.size,(progress,signal)=>this.telegram.download(m.telegram_id,verify,m.telegram_peer,progress,signal),verify);if(await hashFile(verify)!==m.sha256)throw Error('Telegram verification failed; local copy retained');this.store.patch(id,{status:'verified',verified_at:Date.now(),manifest_at:null,error:null,raw:null,attempts:0,retry_at:0});this.transfers.delete(id);}finally{await unlink(verify).catch(()=>{});}
+ }
+ async stageFolderFile(id, input) {
+  return this.lock(id, async () => {
+   const media = this.store.get(id);
+   const enabled = () => {
+    const settings = this.store.settings();
+    return settings.enabled && settings.autoDownload && settings.autoUpload &&
+     settings[media.kind] && this.store.chatSelected(media.chat_id);
+   };
+   if (!this.folderOnly || !enabled()) throw Error('Backup is disabled for this attachment');
+   if (media.status === 'verified' || await exists(media.path)) return false;
+   if (!media.expected_sha || media.size <= 0 || media.size > this.maxBytes) throw Error('No matching WhatsApp attachment');
+   await mkdir(this.dir, {recursive:true, mode:0o700});
+   const target = join(this.dir, id);
+   const temporary = target + '.' + randomUUID() + '.folder-part';
+   const hash = createHash('sha256');
+   let bytes = 0;
+   const verify = new Transform({transform(chunk, _, done) {
+    bytes += chunk.length;
+    if (bytes > media.size) return done(Error('File is larger than the WhatsApp attachment'));
+    hash.update(chunk);
+    done(null, chunk);
+   }});
+   try {
+    await pipeline(input, verify, createWriteStream(temporary, {mode:0o600}));
+    if (bytes !== media.size || hash.digest('hex') !== media.expected_sha) throw Error('File does not match the selected WhatsApp attachment');
+    if (!enabled()) throw Error('Backup selection changed');
+    await rename(temporary, target);
+    this.store.patch(id, {path:target,sha256:media.expected_sha,downloaded_at:Date.now(),status:'downloaded',attempts:0,retry_at:0,error:null});
+    return true;
+   } finally {
+    await unlink(temporary).catch(() => {});
+   }
+  });
  }
  async retrieve(m){if(!m.telegram_id||!m.sha256)throw Error('No usable Telegram backup');const target=join(this.dir,m.id),part=target+'.'+randomUUID()+'.restore';await mkdir(this.dir,{recursive:true,mode:0o700});try{await this.transfer(m.id,'downloading',m.size,(progress,signal)=>this.telegram.download(m.telegram_id,part,m.telegram_peer,progress,signal),part);if(await hashFile(part)!==m.sha256)throw Error('Telegram copy differs from the archived file');await rename(part,target);this.store.patch(m.id,{path:target,downloaded_at:Date.now(),status:'verified',verified_at:Date.now(),error:null});this.store.event(m.id,'retrieved_from_telegram',m.size);return target;}finally{await unlink(part).catch(()=>{});}}
  async open(id){return this.lock(id,async()=>{const m=this.store.get(id);if(!m)throw Error('Attachment not found');if(await exists(m.path)&&await hashFile(m.path)===m.sha256)return m.path;if(!this.store.settings().cloudOpen)throw Error('Cloud retrieval is turned off in Settings');return this.retrieve(m);});}
@@ -104,7 +139,7 @@ export class Archive {
   }
   if (this.manifestLock) return this.manifestLock;
   this.manifestLock = (async () => {
-   const snapshot = this.store.snapshot();
+   const snapshot = this.store.snapshot({selectedOnly:this.folderOnly});
    if (!snapshot.media.length && !snapshot.messages.length) return;
    snapshot.telegramAccountId = this.telegram.accountId ?? null;
    const encoded = encodeSnapshot(snapshot, {mode:this.indexMode, key:this.indexKey});

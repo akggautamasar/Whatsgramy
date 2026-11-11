@@ -62,12 +62,8 @@ class ArchiveSync(context: Context,params: WorkerParameters):CoroutineWorker(con
         val cache=MediaCache(applicationContext)
         try{val api=Api(applicationContext);val s=api.json("/api/settings");if(!s.optBoolean("enabled"))return@withContext Result.success()
             if(cfg.cleanup&&s.optBoolean("autoCleanup"))cache.cleanup(s.optInt("retentionDays",15))
-            if(cfg.autoDownload&&s.optBoolean("autoDownload")){
-                var cursor=0L
-                downloadLoop@ while(!isStopped){val list=api.json("/api/media",query=mapOf("cursor" to cursor.toString(),"limit" to "100")).getJSONArray("items");if(list.length()==0)break
-                    for(i in 0 until list.length()){if(isStopped)break;val live=api.json("/api/settings");val metered=(applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager).isActiveNetworkMetered;if(!cfg.autoDownload||!live.optBoolean("enabled")||!live.optBoolean("autoDownload")||(cfg.wifiOnly&&metered))break@downloadLoop;val m=list.getJSONObject(i);cursor=m.getLong("cursor");if(m.optString("status")=="verified"&&live.optBoolean(m.optString("kind"),true)&&!cache.seen(m.getString("id")))cache.ensure(m)}
-                }
-            };Result.success()
+            if (WhatsAppFolder(applicationContext).tree != null) WhatsAppFolder(applicationContext).scan(api) { isStopped }
+            Result.success()
         }catch(_:Exception){Result.retry()}finally{cache.close()}
     }
     companion object {

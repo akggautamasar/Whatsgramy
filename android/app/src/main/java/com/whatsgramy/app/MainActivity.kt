@@ -11,6 +11,7 @@ import android.text.InputType
 import android.util.Base64
 import android.view.*
 import android.widget.*
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.lifecycle.lifecycleScope
@@ -44,6 +45,45 @@ class MainActivity:ComponentActivity(){
     private val green=Color.rgb(0,128,105)
     private val ink=Color.rgb(17,27,33)
     private val muted=Color.rgb(102,119,129)
+    private val pickWhatsAppFolder = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) runWork {
+            val folder = WhatsAppFolder(this)
+            val read = android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+            contentResolver.takePersistableUriPermission(uri, read)
+            val old = folder.tree
+            folder.tree = uri
+            if (old != null && old != uri) runCatching { contentResolver.releasePersistableUriPermission(old, read) }
+            ArchiveSync.now(this)
+            showSettings()
+        }
+    }
+
+    private fun chooseBackupChats() = runWork {
+        val chats = jsonItems(request("/api/backup/chats")).rows()
+        if (chats.isEmpty()) {
+            AlertDialog.Builder(this).setMessage("Link WhatsApp and wait for your chat list to appear.").setPositiveButton("OK", null).show()
+            return@runWork
+        }
+        val labels = chats.map { str(it, "title", it.getString("id")) }.toTypedArray()
+        val original = BooleanArray(chats.size) { chats[it].optInt("backup_selected") == 1 }
+        val selected = original.clone()
+        AlertDialog.Builder(this)
+            .setTitle("Choose chats to back up")
+            .setMultiChoiceItems(labels, selected) { _, index, checked -> selected[index] = checked }
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Save selection") { _, _ ->
+                runWork {
+                    val changes = chats.indices.filter { original[it] != selected[it] }
+                        .map { JSONObject().put("id", chats[it].getString("id")).put("selected", selected[it]) }
+                    for (batch in changes.chunked(50)) {
+                        request("/api/backup/chats", "PUT", JSONObject().put("changes", JSONArray(batch)))
+                    }
+                    ArchiveSync.now(this)
+                    showSettings()
+                }
+            }.show()
+    }
+
     override fun onCreate(state:Bundle?){super.onCreate(state);cfg=Connection(this);api=Api(this)
         window.statusBarColor=Color.WHITE;window.navigationBarColor=Color.WHITE
         window.decorView.systemUiVisibility=View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
@@ -114,7 +154,7 @@ class MainActivity:ComponentActivity(){
     private fun showChats(query:String="",filter:String="All"){activeTab="Chats";page("Whatsgramy");searchBox("Search chats",query){showChats(it,filter)};chips(listOf("All","With files","Needs backup"),filter){showChats(query,it)};val line=connectionLine();statusPanel=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;body.addView(this)};val panel=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL};body.addView(panel)
         live("/api/chats",emptyMap(),line){data->val y=scroll.scrollY;panel.removeAllViews();val rows=jsonItems(data).rows().filter{str(it,"title").contains(query,true)&&when(filter){"With files"->it.optInt("files")>0;"Needs backup"->it.optInt("files")>it.optInt("saved_files");else->true}}
             if(rows.isEmpty())empty(panel,"No chats to show",if(query.isNotBlank())"Try another name."else"Connect WhatsApp in Settings. Chats appear as your linked device syncs."){showSettings()}
-            rows.forEach{c->val name=str(c,"title",str(c,"id"));val row=LinearLayout(this).apply{gravity=Gravity.CENTER_VERTICAL;setPadding(dp(16),dp(12),dp(16),dp(12));minimumHeight=dp(82);setOnClickListener{showChat(c.getString("id"),name)}};row.addView(avatar(name),LinearLayout.LayoutParams(dp(52),dp(52)).apply{rightMargin=dp(14)});val copy=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL};val top=LinearLayout(this);top.addView(text(name,17f,true).apply{maxLines=1;ellipsize=android.text.TextUtils.TruncateAt.END},LinearLayout.LayoutParams(0,-2,1f));top.addView(text(time(c.optLong("updated")),11f).apply{setTextColor(muted)});copy.addView(top);copy.addView(text(str(c,"preview",str(c,"last_file","No messages yet")),14f).apply{setTextColor(muted);maxLines=1;ellipsize=android.text.TextUtils.TruncateAt.END});if(c.optInt("files")>0)copy.addView(text("${c.optInt("saved_files")} / ${c.optInt("files")} files saved to Telegram",11f).apply{setTextColor(green)});row.addView(copy,LinearLayout.LayoutParams(0,-2,1f));panel.addView(row);panel.addView(View(this).apply{setBackgroundColor(Color.rgb(241,243,244))},LinearLayout.LayoutParams(-1,dp(1)).apply{leftMargin=dp(82)})};scroll.post{scroll.scrollTo(0,y)}
+            rows.forEach{c->val name=str(c,"title",str(c,"id"));val row=LinearLayout(this).apply{gravity=Gravity.CENTER_VERTICAL;setPadding(dp(16),dp(12),dp(16),dp(12));minimumHeight=dp(82);setOnClickListener{showChat(c.getString("id"),name)}};row.addView(avatar(name),LinearLayout.LayoutParams(dp(52),dp(52)).apply{rightMargin=dp(14)});val copy=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL};val top=LinearLayout(this);top.addView(text(name,17f,true).apply{maxLines=1;ellipsize=android.text.TextUtils.TruncateAt.END},LinearLayout.LayoutParams(0,-2,1f));top.addView(text(time(c.optLong("updated")),11f).apply{setTextColor(muted)});copy.addView(top);copy.addView(text(str(c,"preview",str(c,"last_file","No messages yet")),14f).apply{setTextColor(muted);maxLines=1;ellipsize=android.text.TextUtils.TruncateAt.END});if(c.optInt("files")>0)copy.addView(text("${c.optInt("saved_files")} / ${c.optInt("files")} files saved to Telegram",11f).apply{setTextColor(green)});if(c.optInt("backup_selected")==1)copy.addView(text("Selected for backup",11f).apply{setTextColor(green)});row.addView(copy,LinearLayout.LayoutParams(0,-2,1f));panel.addView(row);panel.addView(View(this).apply{setBackgroundColor(Color.rgb(241,243,244))},LinearLayout.LayoutParams(-1,dp(1)).apply{leftMargin=dp(82)})};scroll.post{scroll.scrollTo(0,y)}
         }
     }
     private fun showChat(id:String,name:String,before:Long=Long.MAX_VALUE,older:Boolean=false,beforeId:String=""){activeTab="Chats";page(name,"WhatsApp conversation · attachment archive",{showChats()});refreshPage={showChat(id,name,before,older,beforeId)};body.background=ChatWallpaper();val line=connectionLine();val panel=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setPadding(dp(8),0,dp(8),dp(10))};body.addView(panel);var initial=true
@@ -126,7 +166,7 @@ class MainActivity:ComponentActivity(){
     private fun localFile(m:JSONObject):File? {val id=mediaId(m);if(!id.matches(Regex("[a-f0-9]{64}")))return null;return MediaCache(this).use{it.local(id)}?:File(filesDir,"engine/media/$id").takeIf{it.isFile}}
     private fun onPhone(m:JSONObject)=localFile(m)!=null
     private fun cloudSaved(m:JSONObject)=m.optBoolean("telegram_saved")||(m.optString("status")=="verified"&&m.optLong("telegram_id")>0)
-    private fun phase(m:JSONObject):String=when(str(m,"status")){"verified"->"Saved to Telegram";"uploading"->"Uploading to Telegram";"uploaded","verifying"->"Uploaded · verifying backup";"downloading"->"Downloading from WhatsApp";"downloaded"->"On phone · waiting to upload";"failed"->if(m.optInt("attempts")<20 && m.optLong("retry_at")>System.currentTimeMillis()) "Retry scheduled for ${time(m.optLong("retry_at"))}" else "Backup failed · tap for details";"needs_source"->"Original file needed";else->"Waiting to download"}
+    private fun phase(m:JSONObject):String=when(str(m,"status")){"verified"->"Saved to Telegram";"uploading"->"Uploading to Telegram";"uploaded","verifying"->"Uploaded · verifying backup";"downloading"->"Downloading from WhatsApp";"downloaded"->"On phone · waiting to upload";"failed"->if(m.optInt("attempts")<20 && m.optLong("retry_at")>System.currentTimeMillis()) "Retry scheduled for ${time(m.optLong("retry_at"))}" else "Backup failed · tap for details";"needs_source"->"Original file needed";else->"Waiting for a matching WhatsApp folder file"}
     private fun fileRow(parent:LinearLayout,m:JSONObject,inChat:Boolean=false,refresh:()->Unit){val id=mediaId(m);val saved=cloudSaved(m);val local=onPhone(m);val block=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setPadding(dp(10),dp(10),dp(10),dp(10));background=rounded(if(inChat)Color.argb(14,0,90,70)else Color.rgb(247,249,248),12)};parent.addView(block,LinearLayout.LayoutParams(-1,-2).apply{if(!inChat)setMargins(dp(16),dp(4),dp(16),dp(4))});val row=LinearLayout(this).apply{gravity=Gravity.CENTER_VERTICAL};val mime=str(m,"mime");val kind=if(mime.startsWith("image"))"Photo"else if(mime.startsWith("video"))"Video"else if(mime.startsWith("audio"))"Audio"else "Files";val thumb=if(!inChat&&mime.startsWith("image/"))localFile(m)else null;row.addView(if(thumb!=null)photoPreview(thumb,str(m,"name","Photo"),200)else ArchiveIcon(this,kind,if(saved)green else muted),LinearLayout.LayoutParams(dp(if(thumb!=null)44 else 32),dp(if(thumb!=null)44 else 38)).apply{rightMargin=dp(10)});val info=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL};info.addView(text(str(m,"name","Attachment"),14f,true).apply{maxLines=2;ellipsize=android.text.TextUtils.TruncateAt.END});info.addView(text("${formatSize(m.optLong("size"))} · ${str(m,"name").substringAfterLast('.',kind).uppercase().take(8)}",11f).apply{setTextColor(muted)});row.addView(info,LinearLayout.LayoutParams(0,-2,1f));row.addView(icon(if(local)"Open"else if(saved)"Download"else"Info"){if(local||saved)open(m,refresh)else details(m)},LinearLayout.LayoutParams(dp(40),dp(42)));block.addView(row)
         if(inChat&&mime.startsWith("image/")&&local){localFile(m)?.let{file->val image=photoPreview(file,str(m,"name","Photo"),800);image.setOnClickListener{open(m,refresh)};block.addView(image,LinearLayout.LayoutParams(-1,dp(210)).apply{topMargin=dp(6);bottomMargin=dp(6)})}}
         block.addView(text("${if(saved)"✓ "else ""}${phase(m)}",11f,true).apply{setTextColor(if(saved)green else if(str(m,"status")=="failed")Color.rgb(180,55,50)else muted)})
@@ -238,7 +278,35 @@ class MainActivity:ComponentActivity(){
         connect.addView(button("Resume backup"){EngineService.start(this);showSettings()})
         connect.addView(button("Pause backup service"){getSharedPreferences("engine-controls",MODE_PRIVATE).edit().putBoolean("enabled",false).apply();stopService(android.content.Intent(this,EngineService::class.java));Toast.makeText(this,"Backup service paused",Toast.LENGTH_LONG).show()})
         connect.addView(text("Keep the backup notification enabled. If Android pauses background work, tap Resume backup.",12f))
-        val phone=card();phone.addView(text("Downloads & storage",18f,true));switch(phone,"Download archived attachments automatically","Runs periodically while Android allows background work.",cfg.autoDownload){cfg.autoDownload=it;ArchiveSync.schedule(this)};switch(phone,"Wi-Fi only for automatic downloads","Manual opening can use your current connection.",cfg.wifiOnly){cfg.wifiOnly=it;ArchiveSync.schedule(this)};switch(phone,"Clean up this phone's local copies","Uses the archive retention period. Pinned copies are kept.",cfg.cleanup){cfg.cleanup=it}
+        val source = card()
+        source.addView(text("WhatsApp folder backup", 18f, true))
+        val folder = WhatsAppFolder(this)
+        source.addView(text(if (folder.tree == null) "Choose the WhatsApp Media folder to read files already on this phone." else "WhatsApp folder access granted", 14f))
+        source.addView(button("Choose WhatsApp folder") { pickWhatsAppFolder.launch(folder.tree) })
+        source.addView(button("Choose chats to back up") { chooseBackupChats() })
+        source.addView(text("Only files matched to a selected chat are queued. Open a saved attachment to retrieve it from Telegram.", 12f))
+        val scanStatus = text("", 13f)
+        val scanButton = button("Scan WhatsApp folder now") {
+            if (folder.tree == null) {
+                pickWhatsAppFolder.launch(null)
+            } else runWork {
+                scanStatus.text = "Looking for matching files…"
+                try {
+                    val count = withContext(Dispatchers.IO) { folder.scan(api) }
+                    scanStatus.text = if (count == 0) "No new matching files found. Check your chat selection and WhatsApp downloads." else "$count matching files queued for Telegram."
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    scanStatus.text = e.message ?: "Could not scan the folder."
+                }
+            }
+        }
+        source.addView(scanButton)
+        source.addView(scanStatus)
+        val phone = card()
+        phone.addView(text("Downloads & storage", 18f, true))
+        switch(phone,"Wi-Fi only for background scans","You can scan manually on your current connection.",cfg.wifiOnly){cfg.wifiOnly=it;ArchiveSync.schedule(this)}
+        switch(phone,"Clean up this phone's local copies","Uses the archive retention period. WhatsApp originals are kept.",cfg.cleanup){cfg.cleanup=it}
         MediaCache(this).use{phone.addView(text("Downloaded for viewing: ${it.fileCount()} files · ${formatSize(it.bytes())}",12f))}
         val engineState=text("Loading connections and backup controls…",13f);body.addView(engineState)
         val g = generation
@@ -270,7 +338,7 @@ class MainActivity:ComponentActivity(){
             val number=EditText(this).apply{hint="WhatsApp number with country code, digits only";inputType=InputType.TYPE_CLASS_PHONE};accounts.addView(number);accounts.addView(button("Get pairing code"){runWork{val response=request("/api/whatsapp/pair","POST",JSONObject().put("phone",number.text.toString().filter{it.isDigit()}));AlertDialog.Builder(this@MainActivity).setTitle("Link Whatsgramy").setMessage("In WhatsApp → Linked devices → Link a device → Link with phone number, enter:\n\n${response.getString("code")}").setPositiveButton("OK",null).show()}})
             val qr=wa.optString("qr");if(qr.startsWith("data:image")){val bytes=Base64.decode(qr.substringAfter(','),Base64.DEFAULT);accounts.addView(ImageView(this@MainActivity).apply{setImageBitmap(BitmapFactory.decodeByteArray(bytes,0,bytes.size));adjustViewBounds=true},LinearLayout.LayoutParams(-1,dp(260)));accounts.addView(text("Scan from WhatsApp → Linked devices using another screen, or use the pairing code above.",12f))}
             val settings=status.getJSONObject("settings");val archive=card();archive.addView(text("Backup preferences",18f,true))
-            val entries=listOf(Triple("enabled","Enable archive","Stops new archive transfers and automatic cleanup when off."),Triple("autoDownload","Capture WhatsApp attachments","Download available incoming attachments into the separate archive."),Triple("autoUpload","Upload to Telegram","Local files are retained until verification succeeds."),Triple("cloudOpen","Retrieve missing files from Telegram","Allow on-demand opening in Whatsgramy."),Triple("autoMetadata","Automatic recovery index backup","Save file references, counts, history and Settings to your Telegram Saved Messages."),Triple("autoCleanup","Automatic local cleanup","Only verified, indexed copies are eligible; originals in official WhatsApp are untouched."),Triple("photos","Photos",""),Triple("videos","Videos",""),Triple("audio","Audio and voice notes",""),Triple("documents","PDFs and documents",""),Triple("other","Other files and stickers",""))
+            val entries=listOf(Triple("enabled","Enable archive","Stops new archive transfers and automatic cleanup when off."),Triple("autoDownload","Capture WhatsApp attachments","Read downloaded files from the WhatsApp folder for selected chats."),Triple("autoUpload","Upload to Telegram","Local files are retained until verification succeeds."),Triple("cloudOpen","Retrieve missing files from Telegram","Allow on-demand opening in Whatsgramy."),Triple("autoMetadata","Automatic recovery index backup","Save file references, counts, history and Settings to your Telegram Saved Messages."),Triple("autoCleanup","Automatic local cleanup","Only verified, indexed copies are eligible; originals in official WhatsApp are untouched."),Triple("photos","Photos",""),Triple("videos","Videos",""),Triple("audio","Audio and voice notes",""),Triple("documents","PDFs and documents",""),Triple("other","Other files and stickers",""))
             entries.forEach{(key,label,detail)->switch(archive,label,detail,settings.optBoolean(key)){value->runWork{try{request("/api/settings","PUT",JSONObject().put(key,value));ArchiveSync.schedule(this@MainActivity)}catch(e:Exception){showSettings();throw e}}}}
             val days=EditText(this@MainActivity).apply{hint="Retention days";inputType=InputType.TYPE_CLASS_NUMBER;setText(settings.optInt("retentionDays",15).toString())};archive.addView(days);archive.addView(button("Save retention period"){runWork{val n=days.text.toString().toIntOrNull()?:error("Enter 1–365 days");request("/api/settings","PUT",JSONObject().put("retentionDays",n));showSettings()}})
             val health=card();val stats=status.getJSONObject("stats");val metadata=status.optJSONObject("metadata")?:JSONObject();health.addView(text("Metadata recovery: ${metadata.optString("recovery_status","not checked")}\nLast index backup: ${if(metadata.optLong("last_backup_at",0)>0)DateFormat.getDateTimeInstance().format(Date(metadata.getLong("last_backup_at")))else "Not backed up yet"}",13f));if(!metadata.isNull("error")&&metadata.optString("error").isNotBlank())health.addView(text(metadata.optString("error"),12f));health.addView(text("${stats.optInt("uploaded")} uploaded · ${formatSize(stats.optLong("uploaded_bytes"))}\n${stats.optInt("pending")} pending · ${stats.optInt("needs_source")} need their original source",14f));val types=stats.optJSONObject("by_type")?:JSONObject();types.keys().forEach{kind->val type=types.getJSONObject(kind);health.addView(text("${kind.replaceFirstChar{it.uppercase()}}: ${type.optInt("verified")} verified / ${type.optInt("total")} · ${formatSize(type.optLong("bytes"))}",12f))};health.addView(button("View upload history"){showHistory()});health.addView(text("${stats.optInt("verified")} verified · ${stats.optInt("failed")} failed · ${stats.optInt("total")} attachments",15f,true));health.addView(button("Back up recovery index now"){runWork{request("/api/index/backup","POST");Toast.makeText(this@MainActivity,"Recovery index backed up",Toast.LENGTH_SHORT).show()}});health.addView(text("This is an unofficial linked-device archive. Account pairing and historical media depend on WhatsApp. View-once and disappearing messages are excluded. The app does not send chat messages.",12f))

@@ -15,8 +15,8 @@ const credentials=JSON.parse(await readFile(join(dir,'telegram-api.json'),'utf8'
 const cfg={...credentials,dir,token:privateConfig.token,indexKey:Buffer.from(privateConfig.indexKey,'hex'),indexMode:'telegram',destination:'me'};
 // Opening SQLite here makes missing runtime support a startup failure, visible to CI.
 const probe=new DatabaseSync(':memory:');probe.exec('CREATE TABLE runtime_test(value TEXT)');probe.close();
-const store=new Store(join(dir,'archive.sqlite')),tg=new TelegramArchive(cfg),wa=new WhatsAppConnection({dir,store});
-const archive=new Archive({store,telegram:tg,download:(...args)=>wa.download(...args),dir:join(dir,'media'),indexKey:cfg.indexKey,indexMode:cfg.indexMode,batchSize:10,backgroundCheckpoints:true});
+const store=new Store(join(dir,'archive.sqlite')),tg=new TelegramArchive(cfg),wa=new WhatsAppConnection({dir,store,includeSent:true});
+const archive=new Archive({store,telegram:tg,download:(...args)=>wa.download(...args),dir:join(dir,'media'),indexKey:cfg.indexKey,indexMode:cfg.indexMode,batchSize:10,backgroundCheckpoints:true,folderOnly:true});
 let recovered=false;
 async function recover(){recovered=false;await recoverArchive(store,tg,cfg.indexKey);recovered=true;}
 

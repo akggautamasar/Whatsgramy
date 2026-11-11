@@ -148,3 +148,44 @@ test('first Telegram connection restores backups even after WhatsApp history arr
   target.close();
  }
 });
+
+test('folder backup accepts only exact files from opted-in chats and scopes its recovery index', async t => {
+ const f = await fixture(t);
+ f.archive.folderOnly = true;
+ f.archive.download = () => { throw Error('WhatsApp download must not run in folder mode'); };
+ const other = '9'.repeat(64);
+ f.store.chat('private-chat','Unselected chat');
+ f.store.message({id:other,chatId:'private-chat',timestamp:2,text:'Private text',mediaId:other});
+ const {createHash} = await import('node:crypto');
+ const hash = createHash('sha256').update(f.bytes).digest('hex');
+ f.store.insertMedia({id:other,chatId:'private-chat',messageId:'other',name:'other.pdf',kind:'documents',mime:'application/pdf',size:f.bytes.length,expectedSha:hash});
+ f.store.db.prepare('UPDATE media SET expected_sha=? WHERE id=?').run(hash,f.id);
+ const app = createApp({store:f.store,archive:f.archive,wa:{expectedHash:()=>null},tg:f.tg,token:'test-token'});
+ const server = app.listen(0,'127.0.0.1');
+ t.after(() => new Promise(resolve => server.close(resolve)));
+ await new Promise(resolve => server.once('listening',resolve));
+ const request = (path, options={}) => fetch('http://127.0.0.1:'+server.address().port+'/api/'+path,{
+  ...options,headers:{Authorization:'Bearer test-token',...options.headers}
+ });
+ assert.deepEqual((await (await request('folder/candidates')).json()).items,[]);
+ const choose = await request('backup/chats',{
+  method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({changes:[{id:'chat',selected:true}]}),
+ });
+ assert.equal(choose.status,200);
+ assert.deepEqual((await (await request('folder/candidates')).json()).items.map(item=>item.id),[f.id]);
+ const stage = (id,body) => request('media/'+id+'/folder-source',{method:'PUT',body,headers:{'Content-Type':'application/octet-stream'}});
+ assert.equal((await stage(other,f.bytes)).status,400);
+ assert.equal((await stage(f.id,Buffer.alloc(f.bytes.length))).status,400);
+ assert.equal((await stage(f.id,f.bytes)).status,200);
+ await f.archive.tick();
+ assert.equal(f.store.get(f.id).status,'verified');
+ assert.equal(f.store.get(other).status,'queued');
+ assert.equal(f.getUploads(),1);
+ const manifest = unseal(f.snapshots[0],f.key);
+ assert.deepEqual(manifest.chats.map(chat=>chat.id),['chat']);
+ assert.deepEqual(manifest.media.map(media=>media.id),[f.id]);
+ assert.ok(manifest.messages.every(message=>message.chat_id==='chat'));
+ await f.archive.deleteLocal(f.id);
+ const file = await request('media/'+f.id+'/file');
+ assert.deepEqual(Buffer.from(await file.arrayBuffer()),f.bytes);
+});
