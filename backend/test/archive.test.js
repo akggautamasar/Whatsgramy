@@ -48,6 +48,7 @@ test('activity and message pagination do not skip records sharing a timestamp',a
 test('a stalled attachment releases the queue and leaves its source available for retry', async t => {
  const f = await fixture(t);
  const next = 'c'.repeat(64);
+ f.store.db.prepare('UPDATE messages SET timestamp=? WHERE id=?').run(Date.now()+1000,f.id);
  f.store.insertMedia({id:next,chatId:'chat',messageId:'next',name:'Next.pdf',kind:'documents',mime:'application/pdf',size:f.bytes.length,raw:'{}'});
  f.archive.idleTimeoutMs = 40;
  let aborted = false;
@@ -86,4 +87,64 @@ test('history import yields to archive reads while indexing 5,673 attachments', 
  assert.equal(f.store.chats().length, 401);
  assert.equal(f.store.history(Number.MAX_SAFE_INTEGER,60).length, 60);
  assert.equal(f.store.listMedia(0,30).length,30);
+});
+
+test('new attachments and staged uploads are selected without queueing disabled work', async t => {
+ const f = await fixture(t);
+ const newest = 'd'.repeat(64);
+ const staged = 'e'.repeat(64);
+ for (const [id, createdAt] of [[newest,20],[staged,10]]) {
+  f.store.insertMedia({id,chatId:'chat',messageId:id,name:'File.pdf',kind:'documents',mime:'application/pdf',size:33,raw:'{}',createdAt});
+ }
+ f.store.patch(staged,{path:join(f.dir,'staged.pdf'),status:'downloaded'});
+ assert.deepEqual(f.store.queue().map(item=>item.id), [staged,newest,f.id]);
+ const captureOnly = f.store.updateSettings({autoUpload:false});
+ assert.deepEqual(f.store.queue(Date.now(),['documents'],100,captureOnly).map(item=>item.id),[newest,f.id]);
+ const uploadOnly = f.store.updateSettings({autoDownload:false,autoUpload:true});
+ assert.deepEqual(f.store.queue(Date.now(),['documents'],100,uploadOnly).map(item=>item.id),[staged]);
+});
+
+test('a file verified during a checkpoint stays on disk until a later index includes it', async t => {
+ const f = await fixture(t);
+ f.archive.backgroundCheckpoints = true;
+ let finish;
+ f.tg.backupIndex = () => new Promise(resolve => { finish = resolve; });
+ const checkpoint = f.archive.checkpointIfNeeded();
+ await f.archive.tick();
+ assert.equal(f.store.get(f.id).status,'verified');
+ assert.equal(f.store.get(f.id).manifest_at,null);
+ const remove = assert.rejects(f.archive.deleteLocal(f.id),/next recovery index/);
+ await new Promise(resolve => setImmediate(resolve));
+ finish(500);
+ await checkpoint;
+ await remove;
+ assert.ok(await stat(f.store.get(f.id).path));
+ f.tg.backupIndex = async () => 501;
+ await f.archive.checkpointIfNeeded();
+ await f.archive.deleteLocal(f.id);
+ assert.equal(f.store.get(f.id).path,null);
+});
+
+test('first Telegram connection restores backups even after WhatsApp history arrives', async t => {
+ const f = await fixture(t);
+ f.archive.indexMode='telegram';
+ f.tg.accountId='123';
+ await f.archive.tick();
+ const pending='f'.repeat(64);
+ const media={id:pending,chatId:'chat',messageId:'pending',name:'Pending.pdf',mime:'application/pdf',kind:'documents',size:5,raw:'{}'};
+ f.store.insertMedia(media);
+ await f.archive.backupIndex();
+ const target=new Store(join(f.dir,'preloaded.db'));
+ try {
+  target.insertMedia(media);
+  const {recoverArchive}=await import('../src/metadata.js');
+  const bytes=f.snapshots.at(-1);
+  const source={accountId:'123',async *readManifests(){yield {download:async()=>bytes};}};
+  assert.equal((await recoverArchive(target,source)).status,'restored');
+  assert.equal(target.get(f.id).status,'verified');
+  assert.equal(target.get(pending).status,'queued');
+  assert.equal(target.get(pending).raw,'{}');
+ } finally {
+  target.close();
+ }
 });

@@ -15,7 +15,7 @@ export function createApp({store,archive,wa,tg,token,login}){
  app.get('/api/history',(req,res)=>res.json({items:store.history(Number(req.query.before)||Number.MAX_SAFE_INTEGER,Math.max(1,Math.min(200,Number(req.query.limit)||100)),String(req.query.beforeId||''))}));
  app.get('/api/chats',(_,res)=>res.json({items:store.chats()}));
  app.get('/api/messages',(req,res)=>res.json({items:store.messages(String(req.query.chat||''),Number(req.query.before)||Number.MAX_SAFE_INTEGER,String(req.query.beforeId||'')).map(m=>archive.describe?.(m)??m)}));
- app.get('/api/media',(req,res)=>{const cursor=Math.max(0,Number(req.query.cursor)||0),limit=Math.max(1,Math.min(200,Number(req.query.limit)||100));res.json({items:store.listMedia(cursor,limit,String(req.query.q||'')).map(m=>archive.describe?.(m)??m)});});
+ app.get('/api/media',(req,res)=>{const cursor=Math.max(0,Number(req.query.cursor)||0),limit=Math.max(1,Math.min(200,Number(req.query.limit)||100));res.json({items:store.listMedia(cursor,limit,String(req.query.q||''),String(req.query.filter||'')).map(m=>archive.describe?.(m)??m)});});
  app.use('/api/media/:id',(req,res,next)=>{if(!/^[a-f0-9]{64}$/.test(req.params.id))return res.status(400).json({error:'Invalid attachment ID'});if(!store.get(req.params.id))return res.status(404).json({error:'Attachment not found'});next();});
  app.get('/api/media/:id/file',async(req,res)=>{const m=store.get(req.params.id),path=await archive.open(m.id);res.type(m.mime);res.set('X-Content-Type-Options','nosniff');res.sendFile(path);});
  app.post('/api/media/:id/delete-local',async(req,res)=>{await archive.deleteLocal(req.params.id);res.json({ok:true});});

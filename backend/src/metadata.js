@@ -6,7 +6,8 @@ export function encodeSnapshot(snapshot,{mode='telegram',key}={}){validateSnapsh
 export function decodeSnapshot(bytes,key){const first=bytes.toString('utf8',0,1);const snapshot=first==='{'?JSON.parse(bytes.toString('utf8')):unseal(bytes,key);return validateSnapshot(snapshot);}
 export async function recoverArchive(store,telegram,key,{force=false}={}){
  try{if(telegram.accountId)store.bindTelegramAccount(telegram.accountId);}catch(e){store.recovery('error',e.message);throw e;}
- if(!force&&store.syncState().recovery_status!=='error'&&store.stats().total>0){store.recovery('existing');return {restored:0,status:'existing'};}
+ const local = store.syncState();
+ if(!force&&local.recovery_status!=='error'&&(local.last_restore_at || local.last_backup_at || store.stats().uploaded > 0)){store.recovery('existing');return {restored:0,status:'existing'};}
  store.recovery('checking');let found=false;let lastError;
  try{
   for await(const candidate of telegram.readManifests()){

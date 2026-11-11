@@ -126,7 +126,7 @@ class MainActivity:ComponentActivity(){
     private fun localFile(m:JSONObject):File? {val id=mediaId(m);if(!id.matches(Regex("[a-f0-9]{64}")))return null;return MediaCache(this).use{it.local(id)}?:File(filesDir,"engine/media/$id").takeIf{it.isFile}}
     private fun onPhone(m:JSONObject)=localFile(m)!=null
     private fun cloudSaved(m:JSONObject)=m.optBoolean("telegram_saved")||(m.optString("status")=="verified"&&m.optLong("telegram_id")>0)
-    private fun phase(m:JSONObject):String=when(str(m,"status")){"verified"->"Saved to Telegram";"uploading"->"Uploading to Telegram";"uploaded","verifying"->"Uploaded · verifying backup";"downloading"->"Downloading from WhatsApp";"downloaded"->"On phone · waiting to upload";"failed"->"Backup failed · tap for details";"needs_source"->"Original file needed";else->"Waiting to download"}
+    private fun phase(m:JSONObject):String=when(str(m,"status")){"verified"->"Saved to Telegram";"uploading"->"Uploading to Telegram";"uploaded","verifying"->"Uploaded · verifying backup";"downloading"->"Downloading from WhatsApp";"downloaded"->"On phone · waiting to upload";"failed"->if(m.optInt("attempts")<20 && m.optLong("retry_at")>System.currentTimeMillis()) "Retry scheduled for ${time(m.optLong("retry_at"))}" else "Backup failed · tap for details";"needs_source"->"Original file needed";else->"Waiting to download"}
     private fun fileRow(parent:LinearLayout,m:JSONObject,inChat:Boolean=false,refresh:()->Unit){val id=mediaId(m);val saved=cloudSaved(m);val local=onPhone(m);val block=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setPadding(dp(10),dp(10),dp(10),dp(10));background=rounded(if(inChat)Color.argb(14,0,90,70)else Color.rgb(247,249,248),12)};parent.addView(block,LinearLayout.LayoutParams(-1,-2).apply{if(!inChat)setMargins(dp(16),dp(4),dp(16),dp(4))});val row=LinearLayout(this).apply{gravity=Gravity.CENTER_VERTICAL};val mime=str(m,"mime");val kind=if(mime.startsWith("image"))"Photo"else if(mime.startsWith("video"))"Video"else if(mime.startsWith("audio"))"Audio"else "Files";val thumb=if(!inChat&&mime.startsWith("image/"))localFile(m)else null;row.addView(if(thumb!=null)photoPreview(thumb,str(m,"name","Photo"),200)else ArchiveIcon(this,kind,if(saved)green else muted),LinearLayout.LayoutParams(dp(if(thumb!=null)44 else 32),dp(if(thumb!=null)44 else 38)).apply{rightMargin=dp(10)});val info=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL};info.addView(text(str(m,"name","Attachment"),14f,true).apply{maxLines=2;ellipsize=android.text.TextUtils.TruncateAt.END});info.addView(text("${formatSize(m.optLong("size"))} · ${str(m,"name").substringAfterLast('.',kind).uppercase().take(8)}",11f).apply{setTextColor(muted)});row.addView(info,LinearLayout.LayoutParams(0,-2,1f));row.addView(icon(if(local)"Open"else if(saved)"Download"else"Info"){if(local||saved)open(m,refresh)else details(m)},LinearLayout.LayoutParams(dp(40),dp(42)));block.addView(row)
         if(inChat&&mime.startsWith("image/")&&local){localFile(m)?.let{file->val image=photoPreview(file,str(m,"name","Photo"),800);image.setOnClickListener{open(m,refresh)};block.addView(image,LinearLayout.LayoutParams(-1,dp(210)).apply{topMargin=dp(6);bottomMargin=dp(6)})}}
         block.addView(text("${if(saved)"✓ "else ""}${phase(m)}",11f,true).apply{setTextColor(if(saved)green else if(str(m,"status")=="failed")Color.rgb(180,55,50)else muted)})
@@ -141,7 +141,50 @@ class MainActivity:ComponentActivity(){
     }
     private fun details(m:JSONObject){val saved=cloudSaved(m);val message="${phase(m)}\n\nTelegram backup: ${if(saved)"Verified and saved"else if(m.optLong("telegram_id")>0)"Uploaded; verification pending"else"Not saved yet"}\nOn this phone: ${if(onPhone(m))"Yes"else"No"}\nSize: ${formatSize(m.optLong("size"))}\nTelegram message: ${str(m,"telegram_id","Not uploaded yet")}\nUploaded: ${if(m.optLong("uploaded_at")>0)date(m.optLong("uploaded_at"))+" "+time(m.optLong("uploaded_at"))else"Not yet"}\n${str(m,"error")}\n\nSHA-256: ${str(m,"sha256","Not verified yet")}";AlertDialog.Builder(this).setTitle(str(m,"name","File details")).setMessage(message).setPositiveButton("OK",null).show()}
     private fun manage(m:JSONObject,refresh:()->Unit){val id=mediaId(m);val pinned=m.optInt("pinned")==1||MediaCache(this).use{it.pinned(id)};val choices=mutableListOf("File details");if(cloudSaved(m)){choices.add(if(pinned)"Allow automatic local cleanup"else"Keep on this phone");choices.add("Delete phone copies · keep Telegram backup")};if(str(m,"status")=="failed")choices.add("Retry backup");AlertDialog.Builder(this).setTitle(str(m,"name")).setItems(choices.toTypedArray()){_,which->when(choices[which]){"File details"->details(m);"Retry backup"->runWork{request("/api/media/$id/retry","POST");refresh()};"Keep on this phone","Allow automatic local cleanup"->runWork{request("/api/media/$id/pin","POST",JSONObject().put("pinned",!pinned));withContext(Dispatchers.IO){MediaCache(this@MainActivity).use{if(!pinned)it.ensure(m);it.pin(id,!pinned)}};refresh()};else->AlertDialog.Builder(this).setTitle("Delete local copies?").setMessage("The verified Telegram backup and this chat entry will stay. Tap the file later to download it again.").setNegativeButton("Cancel",null).setPositiveButton("Delete local"){_,_->runWork{request("/api/media/$id/delete-local","POST");withContext(Dispatchers.IO){MediaCache(this@MainActivity).use{it.delete(id)}};refresh()}}.show()}}.show()}
-    private fun showFiles(query:String="",cursor:Long=0,filter:String="All"){activeTab="Files";page("Files");searchBox("Search filenames",query){showFiles(it,0,filter)};chips(listOf("All","On phone","Telegram","In progress","Failed"),filter){showFiles(query,0,it)};val line=connectionLine();val panel=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL};body.addView(panel);live("/api/media",mapOf("q" to query,"cursor" to cursor.toString(),"limit" to "30"),line){data->val y=scroll.scrollY;panel.removeAllViews();val all=jsonItems(data).rows();val rows=all.filter{when(filter){"On phone"->onPhone(it);"Telegram"->cloudSaved(it);"In progress"->str(it,"status") !in listOf("verified","failed","needs_source");"Failed"->str(it,"status") in listOf("failed","needs_source");else->true}};panel.addView(text("${rows.size} files on this page · long-press to manage",11f).apply{setTextColor(muted);setPadding(dp(20),dp(4),dp(20),dp(8))});if(rows.isEmpty())empty(panel,"No ${if(filter=="All")"files"else filter.lowercase()+" files"} here",if(filter=="All")"New attachments appear here with their Telegram and phone status."else"Choose another filter, or check the next page.");rows.forEach{fileRow(panel,it){showFiles(query,cursor,filter)}};if(all.size==30)panel.addView(button("Next files"){showFiles(query,all.last().getLong("cursor"),filter)});scroll.post{scroll.scrollTo(0,y)}}}
+    private fun showFiles(query: String = "", cursor: Long = 0, filter: String = "All", previous: List<Long> = emptyList()) {
+        activeTab = "Files"
+        page("Files")
+        refreshPage = { showFiles(query, cursor, filter, previous) }
+        searchBox("Search filenames", query) { showFiles(it, 0, filter) }
+        chips(listOf("All", "On phone", "Telegram", "In progress", "Failed"), filter) { showFiles(query, 0, it) }
+        val serverFilter = when (filter) {
+            "Telegram" -> "telegram"
+            "In progress" -> "pending"
+            "Failed" -> "failed"
+            else -> ""
+        }
+        val line = connectionLine()
+        val panel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        body.addView(panel)
+        val params = mapOf("q" to query, "cursor" to cursor.toString(), "limit" to "30", "filter" to serverFilter)
+        live("/api/media", params, line) { data ->
+            val position = scroll.scrollY
+            panel.removeAllViews()
+            val page = jsonItems(data).rows()
+            val files = if (filter == "On phone") page.filter(::onPhone) else page
+            if (files.isEmpty()) {
+                val hint = if (filter == "On phone" && page.size == 30) {
+                    "Check the next page for more files on this phone."
+                } else {
+                    "Files matching your search and filter will appear here."
+                }
+                empty(panel, "No matching files", hint)
+            } else {
+                panel.addView(text("${files.size} files on this page · long-press to manage", 11f).apply {
+                    setTextColor(muted)
+                    setPadding(dp(20), dp(4), dp(20), dp(8))
+                })
+                files.forEach { file -> fileRow(panel, file) { showFiles(query, cursor, filter, previous) } }
+            }
+            if (previous.isNotEmpty()) panel.addView(button("Previous files") {
+                showFiles(query, previous.last(), filter, previous.dropLast(1))
+            })
+            if (page.size == 30) panel.addView(button("Next files") {
+                showFiles(query, page.last().getLong("cursor"), filter, previous + cursor)
+            })
+            scroll.post { scroll.scrollTo(0, position) }
+        }
+    }
     private fun showHistory(before:Long=Long.MAX_VALUE,beforeId:String="") {
         activeTab = "Transfers"
         page("Transfers", "Telegram backups and phone storage")

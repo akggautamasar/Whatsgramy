@@ -88,8 +88,42 @@ export class Store {
     if('path' in fields&&fields.path===null&&old.path)this.event(id,'local_removed',old.size);
     if('pinned' in fields&&old.pinned!==fields.pinned)this.event(id,fields.pinned?'pinned':'unpinned');
   }
-  queue(now=Date.now(),kinds=KINDS,limit=100){if(!kinds.length)return [];return this.db.prepare(`SELECT * FROM media WHERE status IN ('queued','failed','downloaded','uploaded') AND retry_at<=? AND attempts<20 AND kind IN (${kinds.map(()=>'?').join(',')}) ORDER BY rowid LIMIT ?`).all(now,...kinds,limit);}
-  listMedia(cursor=0,limit=100,query=''){return this.db.prepare('SELECT rowid AS cursor,path,id,chat_id,message_id,name,mime,kind,size,status,sha256,telegram_id,telegram_peer,created_at,uploaded_at,verified_at,downloaded_at,pinned,attempts,error FROM media WHERE rowid>? AND name LIKE ? ORDER BY rowid LIMIT ?').all(cursor,`%${query}%`,limit).map(m=>this.describeMedia(m));}
+  queue(now = Date.now(), kinds = KINDS, limit = 100, settings = DEFAULTS, excluded = []) {
+    if (!kinds.length) return [];
+    return this.db.prepare(`
+      SELECT media.* FROM media LEFT JOIN messages ON messages.id = media.id
+      WHERE media.status IN ('queued','failed','downloaded','uploaded')
+        AND retry_at <= ? AND attempts < 20
+        AND kind IN (${kinds.map(() => '?').join(',')})
+        AND (
+          (? AND (media.telegram_id IS NOT NULL OR media.path IS NOT NULL))
+          OR (? AND media.telegram_id IS NULL AND media.path IS NULL)
+        )
+        ${excluded.length ? `AND media.id NOT IN (${excluded.map(() => '?').join(',')})` : ''}
+      ORDER BY (media.telegram_id IS NOT NULL OR media.path IS NOT NULL) DESC,
+        COALESCE(messages.timestamp, media.created_at, 0) DESC, media.rowid DESC
+      LIMIT ?
+    `).all(now, ...kinds, Number(settings.autoUpload), Number(settings.autoDownload), ...excluded, limit);
+  }
+  listMedia(cursor = 0, limit = 100, query = '', filter = '') {
+    let condition = '';
+    switch (filter) {
+      case 'telegram':
+        condition = "AND status = 'verified' AND telegram_id IS NOT NULL AND verified_at > 0";
+        break;
+      case 'failed':
+        condition = "AND status IN ('failed','needs_source')";
+        break;
+      case 'pending':
+        condition = "AND status NOT IN ('verified','failed','needs_source')";
+        break;
+    }
+    return this.db.prepare(`
+      SELECT rowid AS cursor,path,id,chat_id,message_id,name,mime,kind,size,status,sha256,
+        telegram_id,telegram_peer,created_at,uploaded_at,verified_at,downloaded_at,pinned,attempts,retry_at,error
+      FROM media WHERE rowid > ? AND name LIKE ? ${condition} ORDER BY rowid LIMIT ?
+    `).all(cursor, `%${query}%`, limit).map(media => this.describeMedia(media));
+  }
   chats(){return this.db.prepare(`SELECT c.*, (SELECT text FROM messages WHERE chat_id=c.id ORDER BY timestamp DESC LIMIT 1) AS preview,(SELECT COUNT(*) FROM media WHERE chat_id=c.id) AS files,(SELECT COUNT(*) FROM media WHERE chat_id=c.id AND status='verified') AS saved_files,(SELECT name FROM media WHERE chat_id=c.id ORDER BY rowid DESC LIMIT 1) AS last_file FROM chats c ORDER BY updated DESC LIMIT 500`).all();}
   messages(chat,before=Number.MAX_SAFE_INTEGER,beforeId=''){return this.db.prepare('SELECT m.*,a.name,a.mime,a.kind,a.size,a.status,a.sha256,a.verified_at,a.created_at,a.uploaded_at,a.telegram_id,a.telegram_peer,a.path,a.pinned,a.error,a.downloaded_at FROM messages m LEFT JOIN media a ON a.id=m.media_id WHERE m.chat_id=? AND (m.timestamp<? OR (m.timestamp=? AND m.id<?)) ORDER BY m.timestamp DESC,m.id DESC LIMIT 100').all(chat,before,before,beforeId).map(m=>this.describeMedia(m));}
   history(before=Number.MAX_SAFE_INTEGER,limit=100,beforeId=''){return this.db.prepare('SELECT e.*,m.name,m.chat_id FROM events e LEFT JOIN media m ON m.id=e.media_id WHERE (timestamp<? OR (timestamp=? AND e.id<?)) ORDER BY timestamp DESC,e.id DESC LIMIT ?').all(before,before,beforeId,limit);}
@@ -113,8 +147,9 @@ export class Store {
       for(const m of snapshot.messages)this.message({id:m.id,chatId:m.chat_id,sender:m.sender,text:m.text,timestamp:m.timestamp,mediaId:m.media_id,fromMe:!!m.from_me});
       for(const m of snapshot.media){
         const old=this.get(m.id);if(old?.status==='verified')continue;
-        this.insertMedia({id:m.id,chatId:m.chat_id,messageId:m.message_id,name:m.name,mime:m.mime,kind:m.kind,size:m.size,createdAt:m.created_at??null});
         const verified=(m.status===undefined||m.status==='verified')&&!!m.telegram_id&&!!m.sha256&&!!m.verified_at;
+        if (!verified && (old?.raw || old?.path || old?.telegram_id)) continue;
+        this.insertMedia({id:m.id,chatId:m.chat_id,messageId:m.message_id,name:m.name,mime:m.mime,kind:m.kind,size:m.size,createdAt:m.created_at??null});
         this.patch(m.id,{status:verified?'verified':m.telegram_id&&m.sha256?'uploaded':'needs_source',sha256:m.sha256??null,telegram_id:m.telegram_id??null,telegram_peer:m.telegram_peer??snapshot.destination??null,created_at:m.created_at??null,uploaded_at:m.uploaded_at??null,verified_at:verified?m.verified_at:null,manifest_at:verified?snapshot.createdAt:null,pinned:m.pinned?1:0,error:verified?null:'Original local file is absent; reconnect WhatsApp if it is still available',attempts:0,retry_at:0});
       }
       for(const e of snapshot.events??[])this.db.prepare('INSERT OR IGNORE INTO events VALUES(?,?,?,?,?,?)').run(e.id,e.media_id??null,e.type,e.timestamp,e.bytes??0,e.detail??null);

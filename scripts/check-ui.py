@@ -50,12 +50,17 @@ db.executemany(
  ((f'{10000+i:064x}', 'fixture-'+str(1+i%4), f'history-{i}', f'Old photo {i}.jpg',
    'image/jpeg', 'photos', 180000, 'queued', now-86400000-i) for i in range(5670)),
 )
+db.execute(
+ "UPDATE media SET name='Verified deep in archive.pdf', status='verified', telegram_id=102, verified_at=?, sha256=? WHERE id=?",
+ (now, 'b'*64, f'{15669:064x}'),
+)
 db.commit();db.execute('PRAGMA wal_checkpoint(TRUNCATE)');db.close()
 adb('push','ui-test.sqlite','/data/local/tmp/wg-ui.sqlite');shell(*base,'rm','-f','files/engine/archive.sqlite-wal','files/engine/archive.sqlite-shm');shell(*base,'cp','/data/local/tmp/wg-ui.sqlite','files/engine/archive.sqlite')
 adb('push','ui-test.png','/data/local/tmp/wg-ui.png');shell(*base,'mkdir','-p','files/engine/media');shell(*base,'cp','/data/local/tmp/wg-ui.png','files/engine/media/'+'1'*64);shell(*base,'cp','/data/local/tmp/wg-ui.png','files/engine/media/'+'3'*64)
 shell('am','start','-W','-n',PKG+'/.MainActivity');wait_text('Project team');screen('whatsgramy-chats.png')
 tap('Project team');wait_text('Thanks, I can open');wait_text('Saved to Telegram');screen('whatsgramy-conversation.png')
 shell('input','keyevent','4');time.sleep(1);tap('Files');wait_text('Campus-photo.png');wait_text('Not on phone');wait_text('Available on this phone');screen('whatsgramy-files.png')
+tap('Telegram');wait_text('Verified deep in archive.pdf')
 tap('Transfers');wait_text('saved to Telegram');screen('whatsgramy-transfers.png')
 tap('Settings');wait_text('Automatic backup');screen('whatsgramy-settings.png')
 tap('Files');wait_text('Campus-photo.png')

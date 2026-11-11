@@ -16,7 +16,7 @@ const cfg={...credentials,dir,token:privateConfig.token,indexKey:Buffer.from(pri
 // Opening SQLite here makes missing runtime support a startup failure, visible to CI.
 const probe=new DatabaseSync(':memory:');probe.exec('CREATE TABLE runtime_test(value TEXT)');probe.close();
 const store=new Store(join(dir,'archive.sqlite')),tg=new TelegramArchive(cfg),wa=new WhatsAppConnection({dir,store});
-const archive=new Archive({store,telegram:tg,download:(...args)=>wa.download(...args),dir:join(dir,'media'),indexKey:cfg.indexKey,indexMode:cfg.indexMode,batchSize:10});
+const archive=new Archive({store,telegram:tg,download:(...args)=>wa.download(...args),dir:join(dir,'media'),indexKey:cfg.indexKey,indexMode:cfg.indexMode,batchSize:10,backgroundCheckpoints:true});
 let recovered=false;
 async function recover(){recovered=false;await recoverArchive(store,tg,cfg.indexKey);recovered=true;}
 
@@ -26,3 +26,8 @@ app.listen(8787,'127.0.0.1',async()=>{await writeFile(join(dir,'ready.json'),JSO
 login.busy=!!cfg.apiId;login.state=cfg.apiId?'reconnecting':'idle';void (async()=>{try{await tg.connect().catch(()=>{});if(tg.authorized)await recover().catch(()=>{});}finally{login.busy=false;login.state=tg.authorized?'connected':'idle';}})();
 if(store.settings().enabled&&await access(join(dir,'whatsapp-session/creds.json')).then(()=>true,()=>false))await wa.start().catch(()=>{});
 setInterval(()=>{if(recovered)archive.tick().catch(()=>{});},5000);
+
+// Keep Telegram index uploads independent of attachment transfers.
+setInterval(() => {
+ if (recovered && !archive.manifestLock) archive.checkpointIfNeeded().catch(() => {});
+}, 30000);
