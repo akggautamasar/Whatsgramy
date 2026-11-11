@@ -31,6 +31,7 @@ for n in range(60):
 else:raise AssertionError('Engine failed to restart')
 print('Embedded Android engine: SQLite, authentication and settings persistence passed')
 PY
+python3 scripts/check-ui.py
 adb shell pidof com.whatsgramy.app
 adb exec-out screencap -p > whatsgramy-start.png
 adb logcat -d -b crash > crash.log

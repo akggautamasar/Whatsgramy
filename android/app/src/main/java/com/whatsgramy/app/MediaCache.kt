@@ -24,13 +24,14 @@ class MediaCache(private val context: Context): SQLiteOpenHelper(context,"local-
     fun pin(id: String,value: Boolean){writableDatabase.execSQL("UPDATE media SET pinned=? WHERE id=?",arrayOf(if(value)1 else 0,id))}
     fun delete(id: String){synchronized(Downloads.locks.getOrPut(id){Any()}){local(id)?.let { check(it.delete()) { "Could not delete the local copy" } };writableDatabase.execSQL("UPDATE media SET path=NULL WHERE id=?",arrayOf(id))}}
     fun cleanup(days: Int){val cutoff=System.currentTimeMillis()-days.coerceIn(1,365)*86400000L;val ids=readableDatabase.rawQuery("SELECT id FROM media WHERE path IS NOT NULL AND pinned=0 AND downloaded<=?",arrayOf(cutoff.toString())).use { c->buildList { while(c.moveToNext())add(c.getString(0)) } };ids.forEach(::delete)}
+    fun availableIds():List<String> = readableDatabase.rawQuery("SELECT id,path FROM media WHERE path IS NOT NULL",null).use{c->buildList{while(c.moveToNext())if(File(c.getString(1)).isFile)add(c.getString(0))}}
     fun folder()=root.absolutePath
     fun fileCount(): Int=root.listFiles().orEmpty().count { it.isFile&&!it.name.endsWith(".part") }
     fun bytes(): Long=root.listFiles().orEmpty().filter { !it.name.endsWith(".part") }.sumOf { it.length() }
-    fun ensure(item: JSONObject): File {
+    fun ensure(item: JSONObject,onProgress:(Long,Long)->Unit={_,_->}): File {
         val id=item.optString("media_id").ifBlank { item.getString("id") }
         require(id.matches(Regex("[a-f0-9]{64}"))) { "Invalid attachment ID" }
-        require(item.optString("status")=="verified" && item.optLong("verified_at",0)>0) { "Wait until Telegram verification finishes" }
+        require(item.optBoolean("device_local")||(item.optString("status")=="verified" && item.optLong("verified_at",0)>0)) { "Wait until Telegram verification finishes" }
         val sha=item.optString("sha256");require(sha.matches(Regex("[a-f0-9]{64}"))) { "Wait until the Telegram backup is verified" }
         synchronized(Downloads.locks.getOrPut(id){Any()}){
             local(id)?.let { return it }
@@ -44,7 +45,7 @@ class MediaCache(private val context: Context): SQLiteOpenHelper(context,"local-
                 if(response.code==416){part.delete();error("Partial download expired; tap again to retry")}
                 check(response.isSuccessful) { "Download failed (${response.code}); your Telegram backup is kept" }
                 val append=offset>0&&response.code==206
-                response.body?.byteStream()?.use { input->java.io.FileOutputStream(part,append).use { output->input.copyTo(output,1024*1024);output.fd.sync() } }?:error("Empty response")
+                response.body?.byteStream()?.use { input->java.io.FileOutputStream(part,append).use { output->val buffer=ByteArray(128*1024);var received=if(append)offset else 0L;while(true){val n=input.read(buffer);if(n<0)break;output.write(buffer,0,n);received+=n;onProgress(received,expected)};output.fd.sync() } }?:error("Empty response")
             }
             val digest=MessageDigest.getInstance("SHA-256");part.inputStream().use { input->val b=ByteArray(1024*1024);while(true){val n=input.read(b);if(n<0)break;digest.update(b,0,n)} }
             val actual=digest.digest().joinToString(""){"%02x".format(it)}

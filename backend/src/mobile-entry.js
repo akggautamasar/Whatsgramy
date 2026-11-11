@@ -19,9 +19,10 @@ const store=new Store(join(dir,'archive.sqlite')),tg=new TelegramArchive(cfg),wa
 const archive=new Archive({store,telegram:tg,download:(...args)=>wa.download(...args),dir:join(dir,'media'),indexKey:cfg.indexKey,indexMode:cfg.indexMode});
 let recovered=false;
 async function recover(){recovered=false;await recoverArchive(store,tg,cfg.indexKey);recovered=true;}
-await tg.connect().catch(()=>{});if(tg.authorized)await recover().catch(()=>{});
+
 const login=new MobileLogin(tg,recover);
 const app=createApp({store,archive,wa,tg,token:cfg.token,login});
 app.listen(8787,'127.0.0.1',async()=>{await writeFile(join(dir,'ready.json'),JSON.stringify({node:process.version,sqlite:true,phoneOnly:true}));});
+login.busy=!!cfg.apiId;login.state=cfg.apiId?'reconnecting':'idle';void (async()=>{try{await tg.connect().catch(()=>{});if(tg.authorized)await recover().catch(()=>{});}finally{login.busy=false;login.state=tg.authorized?'connected':'idle';}})();
 if(store.settings().enabled&&await access(join(dir,'whatsapp-session/creds.json')).then(()=>true,()=>false))await wa.start().catch(()=>{});
 setInterval(()=>{if(recovered)archive.tick().catch(()=>{});},5000);

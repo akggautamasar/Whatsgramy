@@ -61,7 +61,7 @@ class Api(context: Context) {
     fun json(path: String, method: String="GET", body: JSONObject?=null, query: Map<String,String> = emptyMap()): JSONObject {
         val builder=request(path,query)
         if(method!="GET")builder.method(method,(body?:JSONObject()).toString().toRequestBody("application/json".toMediaType()))
-        return client.newCall(builder.build()).execute().use { response->
+        return client.newBuilder().readTimeout(8,TimeUnit.SECONDS).connectTimeout(3,TimeUnit.SECONDS).build().newCall(builder.build()).execute().use { response->
             val text=response.body?.string()?:"{}"
             if(!response.isSuccessful)throw IllegalStateException(runCatching { JSONObject(text).optString("error","Request failed (${response.code})") }.getOrDefault("Request failed (${response.code})"))
             JSONObject(text)
